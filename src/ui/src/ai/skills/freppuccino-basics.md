@@ -44,6 +44,19 @@ always: true
 - Parts closer than k get pulled together even if they don't touch. To keep small details (eyes, buttons) crisp,
   combine them in a separate operation with a small k.
 - A blend only acts between the operands of that one operation.
+- style: round (default) is a fillet; chamfer is a flat 45° bevel whose legs are k long (machined, hard-surface parts,
+  bevelled cut edges); stairs splits k into `steps` terraces (architectural, stepped or toy-like looks). Same k rules.
+
+## Shell, lattice, pipe
+- shell(target, thickness) hollows a finished solid: cups, vases, bottles, enclosures, helmets. It looks unchanged until
+  you subtract an opening from the shell node (a cylinder down through the rim, a box for a slot). Build the outer form
+  first, shell it, then cut.
+- lattice(target, cell_size, thickness, skin) turns a solid into gyroid infill: lightweight parts, bone-like or
+  sponge-like objects, lamp shades, 3D-printing showcases. Use skin > 0 for a part that is solid outside; skin 0 to show
+  the lattice. Aim for 4 to 12 cells across the part.
+- pipe(points, radius, end_radius?, closed?, smooth?) is a tube along a curve through the points: handles, cables,
+  railings, frames, coils, tentacles, plant stems, chair tubes. One pipe replaces a chain of cylinders and spheres and
+  blends cleanly; taper with end_radius. Union pipes with other parts (k > 0) to weld them on.
 
 ## Practical rules
 - Unioned parts should overlap a little (or use k > 0). Exactly touching surfaces render as a seam.

@@ -22,8 +22,9 @@ public readonly record struct V4(double X, double Y, double Z, double W)
 /// Same kinds and parameter packing as Scene.SdKind / SdPrimitive.P.
 public enum FieldKind { Sphere, Box, Torus, Cylinder, Cone, Ellipsoid, Pyramid }
 
-/// Twist/Bend/Repeat: domain warps of one operand (see <see cref="FrepField.AddWarp"/>).
-public enum FieldOp { Union, Intersect, Difference, Twist, Bend, Repeat }
+/// Twist/Bend/Repeat: domain warps of one operand (see <see cref="FrepField.AddWarp"/>). Shell/Gyroid: modifiers of one
+/// operand's value (<see cref="FrepField.AddModifier"/>). Pipe: a leaf (<see cref="FrepField.AddPipe"/>).
+public enum FieldOp { Union, Intersect, Difference, Twist, Bend, Repeat, Shell, Gyroid, Pipe }
 
 /// A primitive (by index) or an earlier node (by index).
 public readonly record struct FieldRef(bool IsNode, int Index)
@@ -47,8 +48,11 @@ public sealed class FrepField
 {
     // X, Y, Z are the canonical-to-world columns (bounds). Ix, Iy, Iz are the rows of the inverse (the dots in PrimValue).
     readonly record struct Prim(FieldKind Kind, V3 O, V3 X, V3 Y, V3 Z, V3 P, double Lip, V3 Ix, V3 Iy, V3 Iz);
-    // Rows: warp params (null for CSG).
-    readonly record struct Node(FieldOp Op, double K, FieldRef[] Operands, V4[]? Rows = null);
+    // Rows: warp / modifier / pipe params (null for CSG). Code: CSG blend style code (style + 4 · steps, see Csg.FrepNodeMath).
+    readonly record struct Node(FieldOp Op, double K, FieldRef[] Operands, V4[]? Rows = null, double Code = 0);
+
+    static bool IsWarp(FieldOp op) => op is FieldOp.Twist or FieldOp.Bend or FieldOp.Repeat;
+    static bool IsModifier(FieldOp op) => op is FieldOp.Shell or FieldOp.Gyroid;
 
     readonly List<Prim> prims = [];
     readonly List<Node> nodes = [];
@@ -98,9 +102,27 @@ public sealed class FrepField
     public int AddBox(V3 center, V3 x, V3 y, V3 half) => AddPrimitive(FieldKind.Box, center, x, y, half);
 
     /// Difference is operands[0] minus the rest. Operands must already exist. At least one operand.
-    public int AddNode(FieldOp op, double k, IEnumerable<FieldRef> operands)
+    /// <paramref name="code"/>: blend style code (0 = round; Csg.FrepNodeMath.BlendCode).
+    public int AddNode(FieldOp op, double k, IEnumerable<FieldRef> operands, double code = 0)
     {
-        nodes.Add(new Node(op, k, [.. operands]));
+        nodes.Add(new Node(op, k, [.. operands], Code: code));
+        return nodes.Count - 1;
+    }
+
+    /// Shell / Gyroid of <paramref name="child"/>; one row as packed by Csg.FrepNodeMath.ShellRows / GyroidRows.
+    public int AddModifier(FieldOp op, V4[] rows, FieldRef child)
+    {
+        if (!IsModifier(op)) throw new ArgumentOutOfRangeException(nameof(op));
+        if (rows.Length != 1) throw new ArgumentException($"{op} needs 1 row", nameof(rows));
+        nodes.Add(new Node(op, 0, [child], rows));
+        return nodes.Count - 1;
+    }
+
+    /// Pipe leaf; rows as packed by Csg.FrepNodeMath.PipeRowsOf (header + points).
+    public int AddPipe(V4[] rows)
+    {
+        if (rows.Length < 2) throw new ArgumentException("Pipe needs a header and at least one point row", nameof(rows));
+        nodes.Add(new Node(FieldOp.Pipe, 0, [], rows));
         return nodes.Count - 1;
     }
 
@@ -155,8 +177,14 @@ public sealed class FrepField
         for (int i = 0; i < nn; i++)
         {
             var n = nodes[i];
-            double d = v[Slot(n.Operands[0])];
-            for (int o = 1; o < n.Operands.Length; o++) d = Combine(n, d, v[Slot(n.Operands[o])]);
+            double d;
+            if (n.Op == FieldOp.Pipe) d = Pipe(n.Rows!, p);
+            else
+            {
+                d = v[Slot(n.Operands[0])];
+                if (IsModifier(n.Op)) d = Modify(n, p, d);
+                else for (int o = 1; o < n.Operands.Length; o++) d = Combine(n, d, v[Slot(n.Operands[o])]);
+            }
             v[np + i] = d;
         }
         double result = double.PositiveInfinity;
@@ -168,10 +196,54 @@ public sealed class FrepField
 
     static double Combine(in Node n, double d, double t) => n.Op switch
     {
-        FieldOp.Union => Smin(d, t, n.K),
-        FieldOp.Intersect => -Smin(-d, -t, n.K),
-        _ => -Smin(-d, t, n.K),
+        FieldOp.Union => Bmin(d, t, n.K, n.Code),
+        FieldOp.Intersect => -Bmin(-d, -t, n.K, n.Code),
+        _ => -Bmin(-d, t, n.K, n.Code),
     };
+
+    /// Port of bmin in Shaders/FrepShaderGen.cs; keep in sync. code = style + 4 · steps: 0 round, 1 chamfer, 2 stairs.
+    static double Bmin(double a, double b, double k, double code)
+    {
+        if (k <= 0) return Math.Min(a, b);
+        int c = (int)Math.Round(code), style = c & 3;
+        if (style == 0) return Smin(a, b, k);
+        double m = Math.Min(a, b);
+        if (style == 1) return Math.Min(m, (a + b - k) * 0.5);
+        double s = k / Math.Max(c >> 2, 1), w = b - k;
+        return Math.Min(m, 0.5 * (w + a + Math.Abs(Mod(w - a + s, 2 * s) - s)));
+    }
+
+    /// GLSL mod (floored), not C#'s %.
+    static double Mod(double x, double y) => x - y * Math.Floor(x / y);
+
+    /// Port of opShell / opGyroid in Shaders/FrepShaderGen.cs; keep in sync. Rows: see Csg.FrepNodeMath.
+    static double Modify(in Node n, V3 p, double d)
+    {
+        var r = n.Rows![0];
+        if (n.Op == FieldOp.Shell) return r.X <= 0 ? d : Math.Max(d, -d - r.X);
+        if (r.X <= 0) return d;
+        double x = p.X * r.X, y = p.Y * r.X, z = p.Z * r.X;
+        double g = Math.Sin(x) * Math.Cos(y) + Math.Sin(y) * Math.Cos(z) + Math.Sin(z) * Math.Cos(x);
+        double v = Math.Max(d, (Math.Abs(g) - r.Y) * r.Z);
+        return r.W > 0 ? Math.Min(v, Math.Max(d, -d - r.W)) : v;
+    }
+
+    /// Port of sdPipe in Shaders/FrepShaderGen.cs; keep in sync. w[0] = (Lipschitz bound, count, -, color); w[1 + i] = (point, radius).
+    static double Pipe(V4[] w, V3 p)
+    {
+        int n = Math.Min((int)(w[0].Y + 0.5), w.Length - 1);
+        var a = w[1];
+        double d = (p - a.Xyz).Length - a.W;
+        for (int i = 1; i < n; i++)
+        {
+            var e = w[1 + i];
+            V3 pa = p - a.Xyz, ba = e.Xyz - a.Xyz;
+            double h = Math.Clamp(V3.Dot(pa, ba) / Math.Max(V3.Dot(ba, ba), 1e-20), 0, 1);
+            d = Math.Min(d, (pa - ba * h).Length - (a.W + (e.W - a.W) * h));
+            a = e;
+        }
+        return d / w[0].X;
+    }
 
     static int Push(ref double[] memo, ref int top, int stride)
     {
@@ -191,9 +263,11 @@ public sealed class FrepField
         else
         {
             var n = nodes[r.Index];
-            if (n.Rows is { } w)
+            if (n.Op == FieldOp.Pipe) d = Pipe(n.Rows!, p);
+            else if (IsModifier(n.Op)) d = Modify(n, p, Eval(n.Operands[0], p, ctx, ref memo, ref top, stride));
+            else if (IsWarp(n.Op))
             {
-                var q = Warp(n.Op, w, p, out double lip);
+                var q = Warp(n.Op, n.Rows!, p, out double lip);
                 int saved = top;
                 d = Eval(n.Operands[0], q, Push(ref memo, ref top, stride), ref memo, ref top, stride) / lip;
                 top = saved;
@@ -386,7 +460,10 @@ public sealed class FrepField
     ///   intersect:  smax >= max, so it lies in the overlap of the operands' {<= t};
     ///   difference: it lies in the base's {<= t};
     ///   warp:       child(q) / lip <= t needs child(q) <= t · max lip; the child's box is then mapped forward
-    ///               (see <see cref="WarpBox"/>).
+    ///               (see <see cref="WarpBox"/>);
+    ///   shell / gyroid: max(child, …) and min of two such terms are >= child, so it lies in the child's {<= t};
+    ///   pipe:       a leaf; field <= t means within radius + t · lip of the polyline.
+    /// Chamfer / stairs unions sink by up to k/2 per join (bmin >= min − k/2), so their d is k/2 · (operands − 1).
     /// The offset is in field value, not distance: a primitive whose field underestimates distance
     /// (the ellipsoid) grows by more than t, which <see cref="PrimBounds"/> accounts for.
     public (V3 Min, V3 Max) Bounds()
@@ -412,9 +489,14 @@ public sealed class FrepField
             double t = nodeLevel[i];
             if (t == none) continue;
             var n = nodes[i];
-            if (n.Op == FieldOp.Difference) { Ask(n.Operands[0], t); continue; }
-            if (n.Rows is { } w) { Ask(n.Operands[0], t * MaxLip(n.Op, w)); continue; }
-            double d = n.Op == FieldOp.Union && n.Operands.Length > 1 ? Math.Max(n.K, 0) * (n.Operands.Length > 2 ? 1.0 : 0.25) : 0;
+            if (n.Op == FieldOp.Pipe) continue;
+            if (n.Op == FieldOp.Difference || IsModifier(n.Op)) { Ask(n.Operands[0], t); continue; }
+            if (IsWarp(n.Op)) { Ask(n.Operands[0], t * MaxLip(n.Op, n.Rows!)); continue; }
+            double d = 0;
+            if (n.Op == FieldOp.Union && n.Operands.Length > 1 && n.K > 0)
+                d = ((int)Math.Round(n.Code) & 3) == 0
+                    ? n.K * (n.Operands.Length > 2 ? 1.0 : 0.25)
+                    : 0.5 * n.K * (n.Operands.Length - 1);
             foreach (var o in n.Operands) Ask(o, t + d);
         }
 
@@ -425,10 +507,15 @@ public sealed class FrepField
             nodeBox[i] = Empty;
             if (nodeLevel[i] == none) continue;
             var n = nodes[i];
-            var box = Box(n.Operands[0]);
-            if (n.Rows is { } w)
+            if (n.Op == FieldOp.Pipe)
             {
-                if (!IsEmpty(box)) box = WarpBox(n.Op, w, box);
+                nodeBox[i] = PipeBounds(n.Rows!, nodeLevel[i]);
+                continue;
+            }
+            var box = Box(n.Operands[0]);
+            if (IsWarp(n.Op))
+            {
+                if (!IsEmpty(box)) box = WarpBox(n.Op, n.Rows!, box);
             }
             else if (n.Op == FieldOp.Union)
                 for (int o = 1; o < n.Operands.Length; o++) box = Join(box, Box(n.Operands[o]));
@@ -548,6 +635,21 @@ public sealed class FrepField
             default:
                 throw new ArgumentOutOfRangeException(nameof(op));
         }
+    }
+
+    /// World-axis bounds of {pipe field <= t}: the polyline's points ± (largest radius + t · Lipschitz bound).
+    static (V3 Min, V3 Max) PipeBounds(V4[] w, double t)
+    {
+        int n = Math.Min((int)(w[0].Y + 0.5), w.Length - 1);
+        var box = Empty;
+        for (int i = 0; i < n; i++)
+        {
+            var e = w[1 + i];
+            double g = Math.Max(e.W, 0) + Math.Max(t, 0) * w[0].X;
+            var r = new V3(g, g, g);
+            box = Join(box, (e.Xyz - r, e.Xyz + r));
+        }
+        return box;
     }
 
     /// World-axis bounds of {primitive field <= t}, t >= 0, from a box in the primitive's local frame.

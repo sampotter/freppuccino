@@ -34,9 +34,9 @@ public class FrepMeshCommand : Command
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         var scene = FrepScene.Get(doc);
-        if (scene.Count == 0)
+        if (scene.Count == 0 && scene.Pipes.Count == 0)
         {
-            RhinoApp.WriteLine("FrepMesh: no F-rep objects in the document (create some with FSphere, FBox, ...).");
+            RhinoApp.WriteLine("FrepMesh: no F-rep objects in the document (create some with FSphere, FBox, FPipe, ...).");
             return Result.Nothing;
         }
         var field = BuildField(scene, scene.Tree);
@@ -176,6 +176,8 @@ public class FrepMeshCommand : Command
 
         var warps = new Dictionary<int, SdWarp>();
         for (int i = 0; i < scene.Warps.Count; i++) warps[scene.WarpIds[i]] = scene.Warps[i];
+        var pipes = new Dictionary<int, SdPipe>();
+        for (int i = 0; i < scene.Pipes.Count; i++) pipes[scene.PipeIds[i]] = scene.Pipes[i];
 
         var nodeRef = new Dictionary<int, FieldRef?>();
         FieldRef? Ref(FrepOperand o) => o.IsNode
@@ -185,6 +187,20 @@ public class FrepMeshCommand : Command
         {
             nodeRef[n.Id] = null;
             if (n.Hidden) continue;
+            if (n.Op == FrepOp.Pipe)
+            {
+                // Curve deleted: nothing (as in the shader).
+                if (pipes.TryGetValue(n.Id, out var pipe)) nodeRef[n.Id] = FieldRef.Node(field.AddPipe(FrepNodeMath.PipeRowsOf(pipe)));
+                continue;
+            }
+            if (n.Op.IsModifier())
+            {
+                if (n.Operands.Length == 0 || Ref(n.Operands[0]) is not { } inner) continue;
+                nodeRef[n.Id] = n.Op == FrepOp.Shell
+                    ? FieldRef.Node(field.AddModifier(FieldOp.Shell, FrepNodeMath.ShellRows(n), inner))
+                    : FieldRef.Node(field.AddModifier(FieldOp.Gyroid, FrepNodeMath.GyroidRows(n), inner));
+                continue;
+            }
             if (n.Op.IsWarp())
             {
                 if (n.Operands.Length == 0 || Ref(n.Operands[0]) is not { } child) continue;
@@ -205,7 +221,7 @@ public class FrepMeshCommand : Command
             var live = terms.OfType<FieldRef>().ToList();
             if (empty || live.Count == 0) continue;
             var op = n.Op switch { FrepOp.Union => FieldOp.Union, FrepOp.Intersect => FieldOp.Intersect, _ => FieldOp.Difference };
-            nodeRef[n.Id] = FieldRef.Node(field.AddNode(op, n.K, live));
+            nodeRef[n.Id] = FieldRef.Node(field.AddNode(op, n.K, live, FrepNodeMath.BlendCode(n)));
         }
 
         var referenced = tree.Nodes.SelectMany(n => n.Operands).ToHashSet();

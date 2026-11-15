@@ -6,25 +6,55 @@ using Rhino.FileIO;
 
 namespace Freppuccino.Csg;
 
-/// Union/Intersect/Difference: CSG over ≥ 2 operands, blend K. Twist/Bend/Repeat: domain warps of one operand,
-/// shaped by a referenced Rhino object (<see cref="FrepNode.Ref"/>: line for Twist/Bend, box for Repeat) + <see cref="FrepNode.Params"/>.
-public enum FrepOp { Union = 0, Intersect = 1, Difference = 2, Twist = 3, Bend = 4, Repeat = 5 }
+/// Union/Intersect/Difference: CSG over ≥ 2 operands, blend K (+ blend style in Params). Twist/Bend/Repeat: domain warps of
+/// one operand, shaped by a referenced Rhino object (<see cref="FrepNode.Ref"/>: line for Twist/Bend, box for Repeat) +
+/// <see cref="FrepNode.Params"/>. Shell/Gyroid: modifiers of one operand's distance, params only. Pipe: a leaf (no operands)
+/// swept along a referenced Rhino curve.
+public enum FrepOp { Union = 0, Intersect = 1, Difference = 2, Twist = 3, Bend = 4, Repeat = 5, Shell = 6, Gyroid = 7, Pipe = 8 }
+
+/// How a CSG node joins its operands (FrepNode.Params[0] of a Union/Intersect/Difference). K is the blend size for all of them.
+///   Round:   IQ quadratic smooth min/max (fillet-like); K = blend distance.
+///   Chamfer: 45° flat bevel; K = leg length of the bevel along each surface.
+///   Stairs:  K split into Steps terraces (hg_sdf fOpUnionStairs).
+public enum BlendStyle { Round = 0, Chamfer = 1, Stairs = 2 }
 
 public static class FrepOps
 {
-    public static bool IsWarp(this FrepOp op) => op >= FrepOp.Twist;
+    public static bool IsCsg(this FrepOp op) => op <= FrepOp.Difference;
+    /// Domain warps: evaluate their child at a moved point; driven by a reference line / box.
+    public static bool IsWarp(this FrepOp op) => op is FrepOp.Twist or FrepOp.Bend or FrepOp.Repeat;
+    /// One child, its distance modified in place (same point): Shell, Gyroid.
+    public static bool IsModifier(this FrepOp op) => op is FrepOp.Shell or FrepOp.Gyroid;
+    /// Driven by a referenced Rhino object (FrepNode.Ref).
+    public static bool HasRef(this FrepOp op) => op.IsWarp() || op == FrepOp.Pipe;
+    /// Everything but CSG has exactly one operand except Pipe, which has none.
+    public static int Arity(this FrepOp op) => op == FrepOp.Pipe ? 0 : op.IsCsg() ? -1 : 1;
 
-    /// Param names per warp op (index = slot in FrepNode.Params). Angles in degrees.
+    /// Param names per op (index = slot in FrepNode.Params). Angles in degrees, lengths in model units.
+    ///   Union/Intersect/Difference  style: <see cref="BlendStyle"/>; steps: terrace count for Stairs (≥ 1)
     ///   Twist  angle: total twist from line start to end (linear, continues past the ends)
     ///   Bend   angle: total bend over the line's length (straight past the ends); direction: bend direction around the line
     ///   Repeat x/y/z: spacing along the box axes (≤ 0 = no repetition on that axis)
+    ///   Shell  thickness: wall thickness, measured inward from the surface (the outside stays where it was)
+    ///   Gyroid cell: lattice period; thickness: sheet wall thickness; skin: solid outer wall kept around the lattice (0 = none)
+    ///   Pipe   radius: at the curve start; endRadius: at the curve end (linear along the length in between)
     public static IReadOnlyList<string> ParamNames(this FrepOp op) => op switch
     {
+        FrepOp.Union or FrepOp.Intersect or FrepOp.Difference => ["style", "steps"],
         FrepOp.Twist => ["angle"],
         FrepOp.Bend => ["angle", "direction"],
         FrepOp.Repeat => ["x", "y", "z"],
+        FrepOp.Shell => ["thickness"],
+        FrepOp.Gyroid => ["cell", "thickness", "skin"],
+        FrepOp.Pipe => ["radius", "endRadius"],
         _ => [],
     };
+
+    /// Style param (0 round, 1 chamfer, 2 stairs; anything else = round) and stairs count of a CSG node.
+    public static BlendStyle Style(this FrepNode n) =>
+        !n.Op.IsCsg() ? BlendStyle.Round : (int)Math.Round(n.Param(0)) switch { 1 => BlendStyle.Chamfer, 2 => BlendStyle.Stairs, _ => BlendStyle.Round };
+    public static int Steps(this FrepNode n) => Math.Clamp((int)Math.Round(n.Param(1)), 1, MaxSteps);
+    public const int MaxSteps = 64;
 }
 
 /// Leaf (Rhino object id of an SDF primitive) or a reference to another node.
@@ -35,14 +65,17 @@ public readonly record struct FrepOperand(int NodeId, Guid ObjectId)
     public static FrepOperand Object(Guid id) => new(0, id);
 }
 
-/// Difference: Operands[0] − Operands[1..]. K = smooth blend distance (model units, 0 = hard).
+/// Difference: Operands[0] − Operands[1..]. K = smooth blend distance (model units, 0 = hard); Params = [style, steps] (may be empty = round).
 /// Hidden: dropped like a hidden primitive (a missing leaf for its parents; not drawn as a root).
 /// Warps: Operands = [child], Ref = line/box object, Params per <see cref="FrepOps.ParamNames"/>; K unused.
+/// Shell/Gyroid: Operands = [child], no Ref. Pipe: no Operands, Ref = curve object. K unused.
 public sealed record FrepNode(int Id, FrepOp Op, double K, ImmutableArray<FrepOperand> Operands, bool Hidden = false,
     Guid Ref = default, ImmutableArray<double> Params = default)
 {
     public string Name => FrepTree.NodeName(Id);
     public double Param(int i) => !Params.IsDefault && i < Params.Length ? Params[i] : 0;
+    /// Number of stored params; 0 when none were ever set (Params is then a default ImmutableArray, whose Length throws).
+    public int ParamCount => Params.IsDefault ? 0 : Params.Length;
 }
 
 /// Immutable CSG DAG. Nodes in creation order, which is topological: operands always predate their node, and
@@ -66,15 +99,31 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
 
     public bool IsReferenced(FrepOperand o) => Nodes.Any(n => n.Operands.Contains(o));
 
-    public (FrepTree Tree, FrepNode Node) Add(FrepOp op, double k, IEnumerable<FrepOperand> operands)
+    /// CSG node. <paramref name="style"/>/<paramref name="steps"/> only stored when not plain round (keeps old files identical).
+    public (FrepTree Tree, FrepNode Node) Add(FrepOp op, double k, IEnumerable<FrepOperand> operands,
+        BlendStyle style = BlendStyle.Round, int steps = 4)
     {
-        var node = new FrepNode(NextId, op, k, [.. operands]);
+        var node = new FrepNode(NextId, op, k, [.. operands], Params: style == BlendStyle.Round ? default : [(double)style, steps]);
         return (new FrepTree(Nodes.Add(node), NextId + 1), node);
     }
 
     public (FrepTree Tree, FrepNode Node) AddWarp(FrepOp op, FrepOperand child, Guid reference, IEnumerable<double> parameters)
     {
         var node = new FrepNode(NextId, op, 0, [child], Ref: reference, Params: [.. parameters]);
+        return (new FrepTree(Nodes.Add(node), NextId + 1), node);
+    }
+
+    /// Shell / Gyroid over one child.
+    public (FrepTree Tree, FrepNode Node) AddModifier(FrepOp op, FrepOperand child, IEnumerable<double> parameters)
+    {
+        var node = new FrepNode(NextId, op, 0, [child], Params: [.. parameters]);
+        return (new FrepTree(Nodes.Add(node), NextId + 1), node);
+    }
+
+    /// Pipe leaf along a curve object.
+    public (FrepTree Tree, FrepNode Node) AddPipe(Guid curve, IEnumerable<double> parameters)
+    {
+        var node = new FrepNode(NextId, FrepOp.Pipe, 0, [], Ref: curve, Params: [.. parameters]);
         return (new FrepTree(Nodes.Add(node), NextId + 1), node);
     }
 
@@ -101,7 +150,8 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
     /// Caller ensures nothing references it.
     public FrepTree Remove(int id) => this with { Nodes = Nodes.RemoveAll(n => n.Id == id) };
 
-    const int Major = 1, Minor = 2; // 1.1: per-node Hidden; 1.2: Ref + Params
+    // 1.1: per-node Hidden; 1.2: Ref + Params; 1.3: Shell/Gyroid/Pipe ops, CSG blend style in Params (same layout as 1.2)
+    const int Major = 1, Minor = 3;
 
     public void Write(BinaryArchiveWriter w)
     {

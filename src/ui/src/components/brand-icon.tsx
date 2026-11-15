@@ -3,14 +3,14 @@ import { nodeIconName } from '@/lib/scene'
 import type { SceneNode } from '@/bridge/protocol'
 
 // FRepuccino command icons (brand-kit/command-icons, ink recoloured to currentColor so one set serves both themes).
-// cone / pyramid / ellipsoid aren't in the kit yet; ours follow its style. Inlined so currentColor works.
+// cone / pyramid / ellipsoid / pipe aren't in the kit yet; ours follow its style. Inlined so currentColor works.
 const svgs = import.meta.glob<string>('../brand/icons/*.svg', { query: '?raw', import: 'default', eager: true })
 const icons = Object.fromEntries(Object.entries(svgs).map(([path, svg]) => [path.split('/').pop()!.replace('.svg', ''), svg]))
 
 export type BrandIconName =
   | 'box' | 'sphere' | 'cylinder' | 'cone' | 'pyramid' | 'ellipsoid' | 'torus'
   | 'union' | 'subtract' | 'intersect' | 'blend' | 'preview'
-  | 'twist' | 'bend' | 'repeat'
+  | 'twist' | 'bend' | 'repeat' | 'shell' | 'gyroid' | 'pipe'
 
 /** 24px artwork; size it with className (size-4 / size-6 ...). Colour = ink. */
 export function BrandIcon(props: { name: BrandIconName; className?: string }) {

@@ -33,13 +33,14 @@ src/ui/src/components/ai-panel.tsx   chat UI
 src/Freppuccino/Ai/
   AiTools.cs      tool implementations ("aiTool" message → AiToolResultMessage)
   AiWarps.cs      deform tool: twist / bend / repeat nodes + the axis lines / boxes that drive them
+  AiModifiers.cs  shell / lattice / pipe tools (+ the pipe's curve), CSG blend style
   AiShapes.cs     LLM-friendly shape specs ⇄ SdPrimitive (cylinder = start/end/radius, box = center/size, …)
   AiCapture.cs    offscreen screenshots in the hidden "Freppuccino Capture" display mode (proxy Breps invisible)
   AiRunLog.cs     saves each run (transcript + PNGs)
 src/Freppuccino/Scene/FrepPrimitives.cs   SdPrimitive → SDF.* user text + proxy Brep, add / replace in the doc
 ```
 
-Tools: `get_scene`, `create_primitive`, `update_primitive`, `transform`, `combine`, `deform`, `edit_operation`, `delete`,
+Tools: `get_scene`, `create_primitive`, `update_primitive`, `transform`, `combine`, `deform`, `shell`, `lattice`, `pipe`, `edit_operation`, `delete`,
 `set_visible`, `clear_scene`, `capture_views`, `load_skill`. Objects are addressed by name (unique names are enforced), GUID, or node
 name (`N3`). Primitives take a `color`.
 
@@ -48,6 +49,11 @@ Deforms: `deform` takes LLM-friendly fields (twist: axis + angle; bend: axis + a
 `<target>_<op>_axis|box`. The user can move those to adjust the deform; `delete` / `clear_scene` remove them with their node, and
 `transform` moves them with the part. `deform` / `edit_operation` return a `warning` when a twist or bend is too steep to render well
 (thresholds in `AiWarps.cs`, calibrated in Rhino).
+
+Shell / lattice / pipe (`AiModifiers.cs`): `shell` (target, thickness) and `lattice` (target, cell_size, thickness, skin) wrap a
+part; `pipe` (points, radius, end_radius, closed, smooth, color) builds a curve through the points (tagged like deform refs, named
+`<name>_curve`) and a Pipe node on it. `combine` / `edit_operation` take `style` (round / chamfer / stairs) and `steps`. A uniform
+`transform` scale also scales repeat spacing, pipe radii and shell / lattice sizes.
 Tool errors go back to the model as messages, so it can correct itself.
 
 Screenshots: `capture_views` renders the active view's camera from standard angles (perspective, front, right, top, …) at 512 px,

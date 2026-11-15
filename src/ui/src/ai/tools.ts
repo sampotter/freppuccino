@@ -47,6 +47,30 @@ const DEFORM_FIELDS = {
   y_axis: vec3('repeat: optional lattice Y direction (default [0,1,0])'),
 }
 
+// Blend style of a CSG node (combine / edit_operation; get_scene shows it when not round).
+const STYLE_FIELDS = {
+  style: {
+    type: 'string',
+    enum: ['round', 'chamfer', 'stairs'],
+    description: 'how the blend of size k looks: round fillet (default), chamfer = flat 45° bevel with legs k, stairs = k split into steps terraces',
+  },
+  steps: { type: 'number', description: 'stairs: number of terraces (1 … 64, default 4)' },
+}
+
+// Shell / lattice / pipe fields: create with their tools, change with edit_operation, read back from get_scene.
+const MODIFIER_FIELDS = {
+  thickness: { type: 'number', description: 'shell: wall thickness, inward from the surface; lattice: gyroid sheet wall thickness (< cell_size)' },
+  cell_size: { type: 'number', description: 'lattice: gyroid period (one cell is cell_size wide)' },
+  skin: { type: 'number', description: 'lattice: solid outer wall kept around the lattice, 0 = open lattice (default 0)' },
+}
+const PIPE_FIELDS = {
+  points: { type: 'array', items: vec3('[x,y,z]'), minItems: 2, description: 'pipe: points the centerline passes through, in order' },
+  radius: { type: 'number', description: 'pipe: tube radius (at the first point)' },
+  end_radius: { type: 'number', description: 'pipe: tube radius at the last point (default = radius; varies linearly by length)' },
+  closed: { type: 'boolean', description: 'pipe: loop back to the first point (ring, handle, frame)' },
+  smooth: { type: 'boolean', description: 'pipe: true (default) = smooth curve through the points; false = straight segments with sharp corners' },
+}
+
 const TYPES = ['sphere', 'box', 'ellipsoid', 'cylinder', 'cone', 'torus', 'pyramid']
 
 function tool(name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []): ToolDef {
@@ -56,8 +80,9 @@ function tool(name: string, description: string, properties: Record<string, unkn
 export const TOOLS: ToolDef[] = [
   tool(
     'get_scene',
-    'Lists every F-rep primitive (ref, type, shape fields, color, used_by) and operation node (ref N#; CSG: op, k, operands; ' +
-      'deforms: op, target and the deform fields), the roots (what is drawn), the bounding box and the model units. ' +
+    'Lists every F-rep primitive (ref, type, shape fields, color, used_by) and operation node (ref N#; CSG: op, k, style?, operands; ' +
+      'deforms: op, target and the deform fields; shell / gyroid: target, thickness, cell_size, skin; pipe: points, radius, end_radius, ' +
+      'closed), the roots (what is drawn), the bounding box and the model units. ' +
       'Call it first, and whenever you are unsure of refs or positions.',
   ),
   tool(
@@ -99,13 +124,40 @@ export const TOOLS: ToolDef[] = [
     'combine',
     'Creates a CSG operation node from ≥ 2 operands (primitive refs or node refs). union: merge; subtract: operands[0] minus all ' +
       'the others; intersect: the overlap. k = blend radius in model units (0 = sharp edge, > 0 = smooth fillet-like blend). ' +
+      'style changes how the blend looks (chamfer for machined parts, stairs for terraced / architectural looks). ' +
       'Operands are consumed: only roots are drawn. Returns the node ref (N#).',
     {
       op: { type: 'string', enum: ['union', 'subtract', 'intersect'] },
       operands: refs('primitive or node refs; for subtract the first is the target'),
       k: { type: 'number', description: 'blend radius, ≥ 0 (default 0)' },
+      ...STYLE_FIELDS,
     },
     ['op', 'operands'],
+  ),
+  tool(
+    'shell',
+    'Hollows a primitive or node (target): keeps a wall of the given thickness just inside its surface; the outside does not move. ' +
+      'The cavity is closed, so it looks unchanged until you subtract an opening from the shell node (e.g. a cylinder through the ' +
+      'top for a cup or vase). Consumes the target like combine. Returns the node ref (N#).',
+    { target: { type: 'string', description: 'primitive or node ref, usually the top node of a finished solid' }, thickness: MODIFIER_FIELDS.thickness },
+    ['target', 'thickness'],
+  ),
+  tool(
+    'lattice',
+    'Fills a primitive or node (target) with a gyroid lattice (a smooth 3D-printable infill): the target is replaced by gyroid ' +
+      'sheets clipped to its shape. cell_size = period, thickness = sheet wall, skin > 0 keeps a solid outer wall that thick (a ' +
+      'lightweighted part); skin 0 shows the open lattice. Defaults: ~5 cells across, wall = cell_size / 10. The lattice is fixed in ' +
+      'world space. Returns the node ref (N#).',
+    { target: { type: 'string', description: 'primitive or node ref' }, ...MODIFIER_FIELDS },
+    ['target'],
+  ),
+  tool(
+    'pipe',
+    'Adds a round tube along a curve through points (handles, wires, frames, tubing, rails, coils, organic limbs). Tapers ' +
+      'linearly from radius to end_radius, with round ends. Combines like a primitive (union with blend k welds it smoothly). ' +
+      'Returns the node ref (N#); its curve is created for you and deleted with it.',
+    { name: { type: 'string', description: 'short snake_case name for its curve' }, ...PIPE_FIELDS, color: SHAPE_FIELDS.color },
+    ['points', 'radius'],
   ),
   tool(
     'deform',
@@ -125,13 +177,17 @@ export const TOOLS: ToolDef[] = [
   ),
   tool(
     'edit_operation',
-    "Changes an operation node: a CSG node's op and/or blend k, or a deform node's fields (omitted fields keep their value; " +
-      "a deform can't change its op).",
+    "Changes an operation node: a CSG node's op, blend k, style and steps; or a deform / shell / lattice / pipe node's fields " +
+      "(omitted fields keep their value; only CSG nodes can change op).",
     {
       ref: { type: 'string', description: 'node ref, e.g. "N3"' },
       op: { type: 'string', enum: ['union', 'subtract', 'intersect'] },
       k: { type: 'number' },
+      ...STYLE_FIELDS,
       ...DEFORM_FIELDS,
+      ...MODIFIER_FIELDS,
+      ...PIPE_FIELDS,
+      color: { type: 'string', description: 'pipe: display color' },
     },
     ['ref'],
   ),
@@ -228,7 +284,12 @@ function summarize(name: string, args: Record<string, unknown>, result: Record<s
     case 'update_primitive':
       return String(args.ref)
     case 'combine':
-      return `${result.ref} = ${args.op}(${(args.operands as string[]).join(', ')})${args.k ? ` k=${args.k}` : ''}`
+      return `${result.ref} = ${args.op}(${(args.operands as string[]).join(', ')})${args.k ? ` k=${args.k}` : ''}${args.style && args.style !== 'round' ? ` ${args.style}` : ''}`
+    case 'shell':
+    case 'lattice':
+      return `${result.ref} = ${name}(${args.target})${result.warning ? ' ⚠' : ''}`
+    case 'pipe':
+      return `${result.ref} = pipe r=${args.radius}${args.end_radius !== undefined ? `→${args.end_radius}` : ''}`
     case 'deform':
       return `${result.ref} = ${args.op}(${args.target})${result.warning ? ' ⚠' : ''}`
     case 'edit_operation':

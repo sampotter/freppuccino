@@ -62,23 +62,9 @@ public abstract class FWarpCommand : FrepNodeCommand
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         var verb = EnglishName[1..].ToLowerInvariant();
-        var operands = new List<FrepOperand>();
-        var panel = UiController.TakeSelectedNodes(doc);
-        if (panel.Count == 1 && doc.Objects.GetSelectedObjects(false, false).All(o => !IsSdf(o)))
-            operands.Add(FrepOperand.Node(panel[0]));
-        else
-        {
-            BeginPicking();
-            try
-            {
-                var rc = Pick(doc, $"Object or node to {verb}", false, true, _ => { }, operands);
-                if (rc != Result.Success) return rc;
-            }
-            finally { EndPicking(); }
-        }
-        if (operands.Count != 1) return Result.Cancel;
+        var rc = PickOne(doc, $"Object or node to {verb}", out var child);
+        if (rc != Result.Success) return rc;
 
-        var child = operands[0];
         var size = FrepScene.BoundsOf(doc, child);
         double auto = size.IsValid ? 1.25 * Math.Max(size.Diagonal.MaximumCoordinate, doc.ModelAbsoluteTolerance) : 1;
         var options = Last.Select(v => new OptionDouble(double.IsNaN(v) ? auto : v)).ToArray();

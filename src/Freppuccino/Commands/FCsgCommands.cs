@@ -38,10 +38,31 @@ public abstract class FCsgCommand : FrepNodeCommand
 {
     protected abstract FrepOp Op { get; }
     double lastK; // per command, remembered between runs
+    BlendStyle lastStyle;
+    int lastSteps = 4;
+
+    static readonly string[] StyleNames = [nameof(BlendStyle.Round), nameof(BlendStyle.Chamfer), nameof(BlendStyle.Stairs)];
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         var k = new OptionDouble(lastK, 0, double.MaxValue);
+        var steps = new OptionInteger(lastSteps, 1, FrepOps.MaxSteps);
+        var style = lastStyle;
+        // Blend = size, Style = round fillet / 45° chamfer / stairs, Steps = stair count.
+        void Options(GetObject go)
+        {
+            go.AddOptionDouble("Blend", ref k);
+            go.AddOptionList("Style", StyleNames, (int)style);
+            if (style == BlendStyle.Stairs) go.AddOptionInteger("Steps", ref steps);
+        }
+        bool OnOption(GetObject go, CommandLineOption o)
+        {
+            if (o.EnglishName != "Style") return false;
+            style = (BlendStyle)o.CurrentListOptionIndex;
+            go.ClearCommandOptions();
+            Options(go);
+            return true;
+        }
         var operands = new List<FrepOperand>();
         Result rc;
         BeginPicking();
@@ -49,9 +70,9 @@ public abstract class FCsgCommand : FrepNodeCommand
         {
             if (Op == FrepOp.Difference)
             {
-                rc = Pick(doc, "Base object or node", false, false, go => go.AddOptionDouble("Blend", ref k), operands);
+                rc = Pick(doc, "Base object or node", false, false, Options, operands, OnOption);
                 if (rc == Result.Success)
-                    rc = Pick(doc, "Objects or nodes to subtract", true, false, go => go.AddOptionDouble("Blend", ref k), operands);
+                    rc = Pick(doc, "Objects or nodes to subtract", true, false, Options, operands, OnOption);
             }
             else
             {
@@ -59,7 +80,7 @@ public abstract class FCsgCommand : FrepNodeCommand
                 rc = operands.Count >= 2 && doc.Objects.GetSelectedObjects(false, false).All(o => !IsSdf(o))
                     ? Result.Success
                     : Pick(doc, "Objects or nodes to " + (Op == FrepOp.Union ? "union" : "intersect"), true, true,
-                        go => go.AddOptionDouble("Blend", ref k), operands);
+                        Options, operands, OnOption);
             }
         }
         finally { EndPicking(); }
@@ -72,7 +93,9 @@ public abstract class FCsgCommand : FrepNodeCommand
         }
 
         lastK = k.CurrentValue;
-        var (tree, node) = FrepTrees.Get(doc).Add(Op, lastK, operands);
+        lastStyle = style;
+        lastSteps = steps.CurrentValue;
+        var (tree, node) = FrepTrees.Get(doc).Add(Op, lastK, operands, lastStyle, lastSteps);
         FrepTrees.Set(doc, tree, EnglishName);
         doc.Objects.UnselectAll();
         RhinoApp.WriteLine($"{EnglishName}: created {node.Name}.");
@@ -90,8 +113,34 @@ public abstract class FrepNodeCommand : Command
 
     protected static bool IsSdf(RhinoObject? o) => o != null && SdfUserText.ReadType(o.Attributes) != null;
 
+    /// One operand: the single node selected in the panel (when no SDF object is selected in Rhino), else a picked object
+    /// or typed / clicked node name.
+    protected static Result PickOne(RhinoDoc doc, string prompt, out FrepOperand operand)
+    {
+        operand = default;
+        var panel = UiController.TakeSelectedNodes(doc);
+        if (panel.Count == 1 && doc.Objects.GetSelectedObjects(false, false).All(o => !IsSdf(o)))
+        {
+            operand = FrepOperand.Node(panel[0]);
+            return Result.Success;
+        }
+        var operands = new List<FrepOperand>();
+        BeginPicking();
+        try
+        {
+            var rc = Pick(doc, prompt, false, true, _ => { }, operands);
+            if (rc != Result.Success) return rc;
+        }
+        finally { EndPicking(); }
+        if (operands.Count != 1) return Result.Cancel;
+        operand = operands[0];
+        return Result.Success;
+    }
+
     /// Appends picks to <paramref name="into"/> (deduped). Node names may be typed/clicked repeatedly; picking objects or Enter ends.
-    protected static Result Pick(RhinoDoc doc, string prompt, bool many, bool preselect, Action<GetObject> options, List<FrepOperand> into)
+    /// <paramref name="onOption"/>: handles a clicked option the OptionDouble/OptionInteger refs don't (e.g. a list); true = handled.
+    protected static Result Pick(RhinoDoc doc, string prompt, bool many, bool preselect, Action<GetObject> options, List<FrepOperand> into,
+        Func<GetObject, CommandLineOption, bool>? onOption = null)
     {
         var tree = FrepTrees.Get(doc);
         var go = new GetObject();
@@ -116,6 +165,7 @@ public abstract class FrepNodeCommand : Command
             switch (many ? go.GetMultiple(1, 0) : go.Get())
             {
                 case GetResult.Option:
+                    if (go.Option() is { } option) onOption?.Invoke(go, option);
                     continue;
                 case GetResult.String:
                     var text = go.StringResult();

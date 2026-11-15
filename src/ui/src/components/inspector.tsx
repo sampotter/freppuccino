@@ -7,8 +7,8 @@ import { BrandIcon, NodeIcon, type BrandIconName } from '@/components/brand-icon
 import { ParamSlider } from '@/components/param-slider'
 import { ColorField } from '@/components/color-field'
 import { send, useHost } from '@/bridge/host'
-import type { AllowedCommand, DeformKind, OperationKind, SceneNode } from '@/bridge/protocol'
-import { DEFORMS, OPERATIONS, PRIMITIVES, displayParams, isDeform, typeLabel } from '@/lib/scene'
+import type { AllowedCommand, BlendStyle, DeformKind, OperationKind, SceneNode } from '@/bridge/protocol'
+import { BLEND_STYLES, DEFORMS, OPERATIONS, PRIMITIVES, displayParams, isDeform, typeLabel } from '@/lib/scene'
 
 /** Bottom half of the panel; what it shows depends on the selection (pick order). */
 export function Inspector(props: { selected: SceneNode[]; labels: Map<string, string>; roots: Set<string> }) {
@@ -61,6 +61,11 @@ function CreateSection() {
           {Object.values(PRIMITIVES).map((p) => (
             <CommandTile key={p.command} label={p.label} icon={p.icon} command={p.command} />
           ))}
+          {Object.values(DEFORMS)
+            .filter((d) => d.create)
+            .map((d) => (
+              <CommandTile key={d.command} label={d.label} icon={d.icon} command={d.command} />
+            ))}
         </div>
       </Section>
       <div className="mx-4 h-px bg-border" />
@@ -134,31 +139,7 @@ function PrimitiveSection(props: { node: SceneNode; labels: Map<string, string> 
   const shown = (key: string, value: number) =>
     drag?.key === key ? drag.value : pending?.key === key ? pending.value : value
 
-  // SDF.Color: throttled previews while the picker is open; the final value is one undo step.
-  const liveColor = useRef({ timer: 0, color: '', previewed: false })
-  const previewColor = (color: string) => {
-    const l = liveColor.current
-    l.color = color
-    if (l.timer) return
-    l.timer = window.setTimeout(() => {
-      l.timer = 0
-      l.previewed = true
-      send({ type: 'setColor', id: node.id, color: l.color, preview: true })
-    }, PREVIEW_MS)
-  }
-  const commitColor = (color: string) => {
-    const l = liveColor.current
-    clearTimeout(l.timer)
-    Object.assign(l, { timer: 0, previewed: false })
-    send({ type: 'setColor', id: node.id, color })
-  }
-  useEffect(() => {
-    const l = liveColor.current
-    return () => {
-      clearTimeout(l.timer)
-      if (l.previewed) send({ type: 'setColor', id: node.id, color: l.color })
-    }
-  }, [node.id])
+  const [previewColor, commitColor] = useColorEdit(node.id)
 
   return (
     <Section title={props.labels.get(node.id) ?? ''} badge={typeLabel(node)} icon={<NodeIcon node={node} className="size-6" />}>
@@ -242,6 +223,23 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
     }
   }, [id])
 
+  // Blend style (round / chamfer / stairs) + stairs count: node params, edited with setNodeParam (host values win on change).
+  const hostStyle = (existing?.params?.style ?? 0) as BlendStyle
+  const hostSteps = existing?.params?.steps ?? 4
+  const [style, setStyle] = useState<BlendStyle>(hostStyle)
+  const [steps, setSteps] = useState(hostSteps)
+  const [syncedStyle, setSyncedStyle] = useState({ style: hostStyle, steps: hostSteps })
+  if (existing && (hostStyle !== syncedStyle.style || hostSteps !== syncedStyle.steps)) {
+    setSyncedStyle({ style: hostStyle, steps: hostSteps })
+    setStyle(hostStyle)
+    setSteps(hostSteps)
+  }
+  const sentSteps = useRef(hostSteps)
+  const editStyle = (name: 'style' | 'steps', value: number, preview = false) => {
+    if (existing) send({ type: 'setNodeParam', id: existing.id, name, value, preview })
+  }
+  const styleLabel = BLEND_STYLES[style]?.label ?? 'Round'
+
   // Swapping only makes sense for two new operands; otherwise pick order decides the subtract target.
   const canSwap = !existing && props.operands.length === 2
   const operands = canSwap && swapped ? [...props.operands].reverse() : props.operands
@@ -286,8 +284,29 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
         ))}
       </ToggleGroup>
 
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        spacing={0}
+        value={String(style)}
+        onValueChange={(v) => {
+          if (!v || Number(v) === style) return
+          setStyle(Number(v) as BlendStyle)
+          editStyle('style', Number(v))
+        }}
+        className="w-full"
+        aria-label="Blend style"
+      >
+        {BLEND_STYLES.map((s) => (
+          <ToggleGroupItem key={s.value} value={String(s.value)} className="flex-1 px-1" title={s.hint}>
+            {s.label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+
       <ParamSlider
-        label="Blend radius"
+        label={style === 0 ? 'Blend radius' : `${styleLabel} size`}
         units={k === 0 ? 'sharp' : units}
         value={k}
         max={20}
@@ -300,6 +319,31 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
         onCommit={existing ? commitK : setK}
       />
 
+      {style === 2 && (
+        <ParamSlider
+          label="Steps"
+          value={steps}
+          min={1}
+          max={16}
+          step={1}
+          onChange={(v) => {
+            const n = Math.round(v)
+            setSteps(n)
+            // Discrete: preview only when the count changes.
+            if (n !== sentSteps.current) {
+              sentSteps.current = n
+              editStyle('steps', n, true)
+            }
+          }}
+          onCommit={(v) => {
+            const n = Math.max(1, Math.round(v))
+            setSteps(n)
+            sentSteps.current = n
+            editStyle('steps', n)
+          }}
+        />
+      )}
+
       {existing ? (
         roots.has(existing.id) && (
           <Button variant="outline" onClick={() => send({ type: 'deleteNodes', ids: [existing.id] })}>
@@ -307,7 +351,7 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
           </Button>
         )
       ) : (
-        <Button onClick={() => send({ type: 'applyOperation', operands: operands.map((o) => o.id), op, k })}>
+        <Button onClick={() => send({ type: 'applyOperation', operands: operands.map((o) => o.id), op, k, style, steps })}>
           Apply {OPERATIONS[op].label.toLowerCase()}
         </Button>
       )}
@@ -321,8 +365,10 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string>; ro
   const { node, labels, roots } = props
   const units = useHost((s) => s.settings.units)
   const params = displayParams(node)
-  const isAngle = node.op !== 'repeat'
+  const info = isDeform(node.op) ? DEFORMS[node.op] : undefined
+  const isAngle = !!info?.angle
   const [max] = useState(() => (isAngle ? 360 : Math.max(1, ...params.map((p) => p.value * 3))))
+  const [previewColor, commitColor] = useColorEdit(node.id)
 
   // Throttled previews while dragging; release sends the final value (= one undo step).
   const live = useRef({ timer: 0, name: '', value: 0, previewed: false })
@@ -355,7 +401,15 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string>; ro
     <Section title={labels.get(node.id) ?? ''} badge={typeLabel(node)} icon={<NodeIcon node={node} className="size-6" />}>
       {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
       {node.refMissing && (
-        <p className="type-small text-muted-foreground">{node.op === 'repeat' ? 'Box' : 'Axis line'} deleted; drawn unwarped.</p>
+        <p className="type-small text-muted-foreground">
+          {info?.ref ?? 'Reference'} deleted; {node.op === 'pipe' ? 'not drawn' : 'drawn unwarped'}.
+        </p>
+      )}
+      {node.op === 'pipe' && !node.refMissing && (
+        <ColorField label="Color" value={node.color ?? '#FCFCFC'} onChange={previewColor} onCommit={commitColor} />
+      )}
+      {node.op === 'shell' && (
+        <p className="type-small text-muted-foreground">Hollow inside; subtract an opening from it to see the wall.</p>
       )}
       {params.map((p) => (
         <ParamSlider
@@ -379,17 +433,48 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string>; ro
   )
 }
 
-/** Runs FTwist / FBend / FRepeat on the selection (they then ask for the line / box). */
+/** Runs FTwist / FBend / FRepeat / FShell / FGyroid on the selection (warps then ask for the line / box). */
 function DeformButtons() {
   return (
-    <Section title="Deform">
+    <Section title="Modify">
       <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-2">
-        {(Object.keys(DEFORMS) as DeformKind[]).map((kind) => (
-          <CommandTile key={kind} {...DEFORMS[kind]} />
-        ))}
+        {(Object.keys(DEFORMS) as DeformKind[])
+          .filter((kind) => !DEFORMS[kind].create)
+          .map((kind) => (
+            <CommandTile key={kind} {...DEFORMS[kind]} />
+          ))}
       </div>
     </Section>
   )
+}
+
+/** SDF.Color edits of a primitive or pipe node: throttled previews while the picker is open; the final value is one undo step. */
+function useColorEdit(id: string): [(color: string) => void, (color: string) => void] {
+  const live = useRef({ timer: 0, color: '', previewed: false })
+  const preview = (color: string) => {
+    const l = live.current
+    l.color = color
+    if (l.timer) return
+    l.timer = window.setTimeout(() => {
+      l.timer = 0
+      l.previewed = true
+      send({ type: 'setColor', id, color: l.color, preview: true })
+    }, PREVIEW_MS)
+  }
+  const commit = (color: string) => {
+    const l = live.current
+    clearTimeout(l.timer)
+    Object.assign(l, { timer: 0, previewed: false })
+    send({ type: 'setColor', id, color })
+  }
+  useEffect(() => {
+    const l = live.current
+    return () => {
+      clearTimeout(l.timer)
+      if (l.previewed) send({ type: 'setColor', id, color: l.color })
+    }
+  }, [id])
+  return [preview, commit]
 }
 
 /** Icon + label button that runs a Rhino command (Create / Deform grids). */

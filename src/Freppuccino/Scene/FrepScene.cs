@@ -30,8 +30,21 @@ public readonly record struct SdPrimitive(SdKind Kind, Plane Frame, Vector3d P)
 /// Extent: child's max distance from the axis (Lipschitz bound clamp). Anchor: child bbox center (Repeat lattice origin).
 public readonly record struct SdWarp(FrepOp Op, Line Axis, Box Region, Point3d Anchor, double Extent, Vector3d P);
 
-/// Program == null: nothing to draw. Primitives/Colors/Warps/Ks feed <see cref="FrepShaderGen.SceneUniforms"/>.
+/// One live Pipe node: its curve sampled to a polyline (≤ FrepNodeMath.PipePoints points), a radius per point, and the curve's
+/// SDF.Color (white if missing).
+public readonly record struct SdPipe(Point3d[] Points, double[] Radii, System.Drawing.Color Color)
+{
+    public SdPipe Transformed(Transform xf)
+    {
+        var pts = (Point3d[])Points.Clone();
+        for (int i = 0; i < pts.Length; i++) pts[i].Transform(xf);
+        return this with { Points = pts };
+    }
+}
+
+/// Program == null: nothing to draw. Primitives/Colors/Warps/Pipes/Ks/Codes feed <see cref="FrepShaderGen.SceneUniforms"/>.
 /// Colors parallel to Primitives: each owner's SDF.Color (white if missing).
+/// Ks: blend k per CSG node (tree order); Codes parallel: blend style code (FrepNodeMath.BlendCode).
 public sealed record FrepSceneData(ShaderSource? Program, IReadOnlyList<SdPrimitive> Primitives, IReadOnlyList<System.Drawing.Color> Colors,
     IReadOnlyList<SdWarp> Warps, IReadOnlyList<double> Ks, int Dropped)
 {
@@ -40,6 +53,13 @@ public sealed record FrepSceneData(ShaderSource? Program, IReadOnlyList<SdPrimit
     public IReadOnlyList<Guid> Ids { get; init; } = [];
     /// Tree node ids, parallel to Warps.
     public IReadOnlyList<int> WarpIds { get; init; } = [];
+    /// Live Pipe nodes and their node ids (parallel).
+    public IReadOnlyList<SdPipe> Pipes { get; init; } = [];
+    public IReadOnlyList<int> PipeIds { get; init; } = [];
+    /// Blend style codes, parallel to Ks.
+    public IReadOnlyList<double> Codes { get; init; } = [];
+    /// Nodes owning uniform rows (live warps, shells, gyroids, live pipes), in row order (FrepShaderGen.Compile).
+    public IReadOnlyList<int> RowNodes { get; init; } = [];
     /// The tree this was compiled from.
     public FrepTree Tree { get; init; } = FrepTree.Empty;
     public int Count => Primitives.Count;
@@ -56,6 +76,8 @@ public static class FrepScene
     static List<RhinoObject> owners = [];
     // Parallel to scene.Warps: the referenced line/box objects.
     static List<RhinoObject> warpOwners = [];
+    // Parallel to scene.Pipes: the referenced curves.
+    static List<RhinoObject> pipeOwners = [];
     static FrepTree tree = FrepTree.Empty; // the one scene was compiled from
     static uint docSerial;
     static bool dirty = true;
@@ -101,8 +123,16 @@ public static class FrepScene
             warps ??= [.. scene.Warps];
             warps[i] = w with { Axis = axis, Region = region };
         }
-        if (prims == null && warps == null) return scene;
-        var next = scene with { Primitives = prims ?? scene.Primitives, Warps = warps ?? scene.Warps };
+        // Pipes follow their curve's drag (the sampled points move rigidly; radii stay, like the committed edit).
+        List<SdPipe>? pipes = null;
+        for (int i = 0; i < pipeOwners.Count; i++)
+        {
+            if (!pipeOwners[i].GetDynamicTransform(out var xf) || xf.IsIdentity) continue;
+            pipes ??= [.. scene.Pipes];
+            pipes[i] = scene.Pipes[i].Transformed(xf);
+        }
+        if (prims == null && warps == null && pipes == null) return scene;
+        var next = scene with { Primitives = prims ?? scene.Primitives, Warps = warps ?? scene.Warps, Pipes = pipes ?? scene.Pipes };
         if (!reshaped || prims == null) return next;
 
         // A sphere stretched into an ellipsoid changes the shader's structure, so recompile (cached by source, so once
@@ -113,8 +143,8 @@ public static class FrepScene
                 if (prims[i].Kind != scene.Primitives[i].Kind) prims[i] = scene.Primitives[i];
             return next;
         }
-        var (program, ks, _) = FrepShaderGen.Compile(prims, scene.Ids, tree, scene.WarpIds.ToHashSet());
-        return next with { Program = program, Ks = ks };
+        var compiled = FrepShaderGen.Compile(prims, scene.Ids, tree, scene.WarpIds.Concat(scene.PipeIds).ToHashSet());
+        return next with { Program = compiled.Program, Ks = compiled.Ks, Codes = compiled.Codes };
     }
 
     /// Same rules as the per-command TransformSdf handlers, applied to in-memory values.
@@ -227,21 +257,44 @@ public static class FrepScene
         foreach (var n in tree.Nodes)
             if (FrepWarpMath.TryResolve(doc, n, out var obj, out var axis, out var region)) refs[n.Id] = (obj!, axis, region);
 
-        var (program, ks, warpIds) = FrepShaderGen.Compile(prims, newIds, tree, refs.Keys.ToHashSet());
+        // Pipe curves likewise; the curve's SDF.Color colors the pipe.
+        var pipeRefs = new Dictionary<int, (RhinoObject Obj, Curve Curve)>();
+        foreach (var n in tree.Nodes)
+            if (FrepNodeMath.TryResolve(doc, n, out var obj, out var curve)) pipeRefs[n.Id] = (obj!, curve);
+
+        var compiled = FrepShaderGen.Compile(prims, newIds, tree, refs.Keys.Concat(pipeRefs.Keys).ToHashSet());
         var bounds = new Bounds(doc, tree, refs);
         var warps = new List<SdWarp>();
+        var warpIds = new List<int>();
         var newWarpOwners = new List<RhinoObject>();
-        foreach (var id in warpIds)
+        var pipes = new List<SdPipe>();
+        var pipeIds = new List<int>();
+        var newPipeOwners = new List<RhinoObject>();
+        foreach (var id in compiled.RowNodes)
         {
             var n = tree.Find(id)!;
-            var (obj, axis, region) = refs[id];
-            warps.Add(FrepWarpMath.Make(n, axis, region, bounds.Of(n.Operands[0])));
-            newWarpOwners.Add(obj);
+            if (refs.TryGetValue(id, out var w))
+            {
+                warps.Add(FrepWarpMath.Make(n, w.Axis, w.Region, bounds.Of(n.Operands[0])));
+                warpIds.Add(id);
+                newWarpOwners.Add(w.Obj);
+            }
+            else if (pipeRefs.TryGetValue(id, out var p))
+            {
+                pipes.Add(FrepNodeMath.Make(n, p.Curve, SdfUserText.ReadColorOrDefault(p.Obj.Attributes)));
+                pipeIds.Add(id);
+                newPipeOwners.Add(p.Obj);
+            }
         }
 
-        scene = new FrepSceneData(program, prims, colors, warps, ks, dropped) { Ids = newIds, WarpIds = warpIds, Tree = tree };
+        scene = new FrepSceneData(compiled.Program, prims, colors, warps, compiled.Ks, dropped)
+        {
+            Ids = newIds, WarpIds = warpIds, Pipes = pipes, PipeIds = pipeIds, Codes = compiled.Codes, RowNodes = compiled.RowNodes,
+            Tree = tree,
+        };
         owners = newOwners;
         warpOwners = newWarpOwners;
+        pipeOwners = newPipeOwners;
     }
 
     /// <see cref="Bounds"/> ignoring warps (no resolved refs); for command defaults.
@@ -272,7 +325,15 @@ public static class FrepScene
             }
             else if (tree.Find(o.NodeId) is { } n)
             {
-                if (n.Op == FrepOp.Difference && n.Operands.Length > 0) b = Of(n.Operands[0]);
+                if (n.Op == FrepOp.Pipe)
+                {
+                    if (doc.Objects.FindId(n.Ref) is { IsDeleted: false } c && FrepRefs.TryCurve(c.Geometry, out var curve))
+                    {
+                        b = curve.GetBoundingBox(true);
+                        b.Inflate(Math.Max(Math.Max(n.Param(0), n.Param(1)), 0));
+                    }
+                }
+                else if (n.Op == FrepOp.Difference && n.Operands.Length > 0) b = Of(n.Operands[0]);
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && refs.TryGetValue(n.Id, out var r)) b = FrepShaderGen.Warped(b, FrepWarpMath.Make(n, r.Axis, r.Region, b));
             }

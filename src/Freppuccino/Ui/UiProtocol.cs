@@ -27,7 +27,7 @@ public static class SceneNodeKind
     public const string Operation = "operation";
 }
 
-/// <summary>Combine operations. Each takes a blend k (model units, 0 = sharp).</summary>
+/// <summary>Combine operations. Each takes a blend k (model units, 0 = sharp) and Params { style: 0 round / 1 chamfer / 2 stairs, steps }.</summary>
 public static class OperationKind
 {
     public const string Union = "union";
@@ -38,6 +38,11 @@ public static class OperationKind
     public const string Twist = "twist";
     public const string Bend = "bend";
     public const string Repeat = "repeat";
+    /// Modifiers of one child (children[0]); Params only (no Ref).
+    public const string Shell = "shell";
+    public const string Gyroid = "gyroid";
+    /// No children; Ref = the curve it follows, Color = that curve's SDF.Color.
+    public const string Pipe = "pipe";
 }
 
 /// <summary>
@@ -58,7 +63,7 @@ public sealed record SceneNode(
     bool? Missing = null,
     string? Ref = null,
     bool? RefMissing = null,
-    // Primitive: SDF.Color "#RRGGBB" (white if the object has none).
+    // Primitive (or pipe node: its curve's): SDF.Color "#RRGGBB" (white if the object has none).
     string? Color = null,
     /// <summary>Primitive carries SDF.Linear.*: a scale or shear the parameters cannot express.</summary>
     bool? Custom = null);
@@ -117,11 +122,12 @@ public sealed record RunCommandRequest(string Command);
 /// Preview = live drag tick (no undo); the next non-preview edit ends the gesture as one undo step.
 public sealed record SetParamRequest(string Id, string Name, double Value, bool Preview = false);
 
-/// Set a primitive's SDF.Color ("#RRGGBB"). Preview = live picker tick (no undo); the next non-preview one ends the gesture as one undo step.
+/// Set a primitive's (or a pipe node's curve's) SDF.Color ("#RRGGBB"). Preview = live picker tick (no undo); the next non-preview one ends the gesture as one undo step.
 public sealed record SetColorRequest(string Id, string Color, bool Preview = false);
 
 /// New CSG node over operands (primitive or node ids, ≥ 2). For subtract, operands[0] is the target.
-public sealed record ApplyOperationRequest(string[] Operands, string Op, double K);
+/// Style: 0 round, 1 chamfer, 2 stairs (Csg.BlendStyle); Steps: stair count.
+public sealed record ApplyOperationRequest(string[] Operands, string Op, double K, int Style = 0, int Steps = 4);
 
 /// Edit an existing operation node. Preview = live drag tick (no undo); the next non-preview edit ends the gesture as one undo step.
 public sealed record SetOperationRequest(string Id, string Op, double K, bool Preview = false);

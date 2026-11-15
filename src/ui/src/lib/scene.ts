@@ -1,5 +1,5 @@
 import type { BrandIconName } from '@/components/brand-icon'
-import type { AllowedCommand, DeformKind, OperationKind, SceneNode } from '@/bridge/protocol'
+import type { AllowedCommand, BlendStyle, DeformKind, OperationKind, SceneNode } from '@/bridge/protocol'
 
 interface PrimitiveInfo {
   label: string
@@ -30,12 +30,35 @@ export const OPERATIONS: Record<OperationKind, { label: string; icon: BrandIconN
   intersect: { label: 'Intersect', icon: 'intersect' },
 }
 
-/** Commands take the selected object / node, then ask for the line / box. Angles in degrees. */
-export const DEFORMS: Record<DeformKind, { label: string; icon: BrandIconName; command: AllowedCommand; params: Record<string, string> }> = {
-  twist: { label: 'Twist', icon: 'twist', command: 'FTwist', params: { angle: 'Angle' } },
-  bend: { label: 'Bend', icon: 'bend', command: 'FBend', params: { angle: 'Angle', direction: 'Direction' } },
-  repeat: { label: 'Repeat', icon: 'repeat', command: 'FRepeat', params: { x: 'Spacing X', y: 'Spacing Y', z: 'Spacing Z' } },
+interface DeformInfo {
+  label: string
+  icon: BrandIconName
+  command: AllowedCommand
+  params: Record<string, string>
+  /** params are angles in degrees (else lengths in model units) */
+  angle?: boolean
+  /** the Rhino object that drives it, for the "deleted" note */
+  ref?: string
+  /** makes new geometry (a Create tile) instead of modifying the selection */
+  create?: boolean
 }
+
+/** Commands take the selected object / node, then (warps) ask for the line / box; FPipe asks for curves. */
+export const DEFORMS: Record<DeformKind, DeformInfo> = {
+  twist: { label: 'Twist', icon: 'twist', command: 'FTwist', params: { angle: 'Angle' }, angle: true, ref: 'Axis line' },
+  bend: { label: 'Bend', icon: 'bend', command: 'FBend', params: { angle: 'Angle', direction: 'Direction' }, angle: true, ref: 'Axis line' },
+  repeat: { label: 'Repeat', icon: 'repeat', command: 'FRepeat', params: { x: 'Spacing X', y: 'Spacing Y', z: 'Spacing Z' }, ref: 'Box' },
+  shell: { label: 'Shell', icon: 'shell', command: 'FShell', params: { thickness: 'Thickness' } },
+  gyroid: { label: 'Gyroid', icon: 'gyroid', command: 'FGyroid', params: { cell: 'Cell size', thickness: 'Wall', skin: 'Skin' } },
+  pipe: { label: 'Pipe', icon: 'pipe', command: 'FPipe', params: { radius: 'Radius', endRadius: 'End radius' }, ref: 'Curve', create: true },
+}
+
+/** CSG blend styles (operation params.style). k is the blend size for each; stairs splits it into params.steps terraces. */
+export const BLEND_STYLES: { value: BlendStyle; label: string; hint: string }[] = [
+  { value: 0, label: 'Round', hint: 'smooth fillet' },
+  { value: 1, label: 'Chamfer', hint: 'flat 45° bevel' },
+  { value: 2, label: 'Stairs', hint: 'terraced steps' },
+]
 
 export function isDeform(op: SceneNode['op']): op is DeformKind {
   return !!op && op in DEFORMS

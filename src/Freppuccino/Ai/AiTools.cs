@@ -28,6 +28,9 @@ public static partial class AiTools
         "transform" => TransformObjects(doc, args),
         "combine" => Combine(doc, args),
         "deform" => Deform(doc, args),
+        "shell" => Shell(doc, args),
+        "lattice" => Lattice(doc, args),
+        "pipe" => Pipe(doc, args),
         "edit_operation" => EditOperation(doc, args),
         "delete" => Delete(doc, args),
         "set_visible" => SetVisible(doc, args),
@@ -68,15 +71,10 @@ public static partial class AiTools
         var ops = new JsonArray();
         foreach (var n in tree.Nodes)
         {
-            var o = n.Op.IsWarp()
-                ? DescribeWarp(doc, tree, n, refs)
-                : new JsonObject
-                {
-                    ["ref"] = n.Name,
-                    ["op"] = OpName(n.Op),
-                    ["k"] = AiShapes.Round(n.K),
-                    ["operands"] = new JsonArray([.. n.Operands.Select(x => (JsonNode)OperandRef(doc, x, refs))]),
-                };
+            var o = n.Op.IsWarp() ? DescribeWarp(doc, tree, n, refs)
+                : n.Op.IsModifier() ? DescribeModifier(doc, n, refs)
+                : n.Op == FrepOp.Pipe ? DescribePipe(doc, n)
+                : DescribeCsg(doc, n, refs);
             if (n.Hidden) o["visible"] = false;
             var used = UsedBy(FrepOperand.Node(n.Id));
             if (used.Count > 0) o["used_by"] = used;
@@ -144,14 +142,15 @@ public static partial class AiTools
         var tree = FrepTrees.Get(doc);
         var targets = Refs(args, "refs").Select(r => Resolve(doc, tree, r)).ToList();
         var leaves = targets.SelectMany(t => Leaves(doc, tree, t)).Distinct().ToList();
-        if (leaves.Count == 0) throw new AiToolException("nothing to transform");
-        // Warps under the targets move with them: their reference lines / boxes get the same transform.
+        // Warps and pipes under the targets move with them: their reference lines / boxes / curves get the same transform.
         var subtree = new HashSet<FrepOperand>(targets);
         foreach (var t in targets) AddDescendants(tree, t, subtree);
-        var warps = subtree.Where(o => o.IsNode).Select(o => tree.Find(o.NodeId)).OfType<FrepNode>().Where(n => n.Op.IsWarp()).ToList();
+        var warps = subtree.Where(o => o.IsNode).Select(o => tree.Find(o.NodeId)).OfType<FrepNode>().Where(n => n.Op.HasRef()).ToList();
+        var pipeCurves = warps.Where(n => n.Op == FrepOp.Pipe).Select(n => doc.Objects.FindId(n.Ref)).OfType<RhinoObject>().ToList();
+        if (leaves.Count == 0 && pipeCurves.Count == 0) throw new AiToolException("nothing to transform");
 
         var bbox = BoundingBox.Empty;
-        foreach (var o in leaves) bbox.Union(o.Geometry.GetBoundingBox(true));
+        foreach (var o in leaves.Concat(pipeCurves)) bbox.Union(o.Geometry.GetBoundingBox(true));
         var pivot = args.ContainsKey("pivot") ? new Point3d(AiShapes.Vec(args, "pivot")) : bbox.Center;
 
         var xf = Transform.Identity;
@@ -189,12 +188,15 @@ public static partial class AiTools
             foreach (var (obj, prim) in updates) FrepPrimitives.Replace(doc, obj, prim);
             foreach (var refId in warps.Select(n => n.Ref).Distinct())
                 if (doc.Objects.FindId(refId) is { IsDeleted: false }) doc.Objects.Transform(refId, xf, true);
-            // Repeat spacing follows a uniform scale (twist / bend follow their line).
-            if (args["scale"] is JsonValue && AiShapes.Number(args, "scale") is var f && f > 0 && warps.Any(n => n.Op == FrepOp.Repeat))
+            // Lengths stored as params follow a uniform scale: repeat spacing, pipe radii, shell / lattice sizes
+            // (twist / bend follow their line, pipes their curve).
+            var sized = subtree.Where(o => o.IsNode).Select(o => tree.Find(o.NodeId)).OfType<FrepNode>()
+                .Where(n => n.Op is FrepOp.Repeat or FrepOp.Pipe or FrepOp.Shell or FrepOp.Gyroid).ToList();
+            if (args["scale"] is JsonValue && AiShapes.Number(args, "scale") is var f && f > 0 && sized.Count > 0)
             {
                 var t = FrepTrees.Get(doc);
-                foreach (var n in warps.Where(n => n.Op == FrepOp.Repeat))
-                    for (int i = 0; i < 3; i++) t = t.WithParam(n.Id, i, n.Param(i) * f);
+                foreach (var n in sized)
+                    for (int i = 0; i < n.Op.ParamNames().Count; i++) t = t.WithParam(n.Id, i, n.Param(i) * f);
                 FrepTrees.Set(doc, t, "AI: transform");
             }
         });
@@ -207,12 +209,13 @@ public static partial class AiTools
     {
         var op = ParseOp(Str(args, "op"));
         var k = args.ContainsKey("k") ? Math.Max(0, AiShapes.Number(args, "k")) : 0;
+        var (style, steps) = StyleArgs(args, null);
         var tree = FrepTrees.Get(doc);
         var operands = Refs(args, "operands").Select(r => Resolve(doc, tree, r)).ToList();
         if (operands.Distinct().Count() != operands.Count) throw new AiToolException("operands must be distinct");
         if (operands.Count < 2) throw new AiToolException("combine needs at least 2 operands");
 
-        var (newTree, node) = tree.Add(op, k, operands);
+        var (newTree, node) = tree.Add(op, k, operands, style, steps);
         Mutate(doc, $"{OpName(op)} {node.Name}", () => FrepTrees.Set(doc, newTree, $"AI: {OpName(op)}"));
 
         var result = new JsonObject { ["ref"] = node.Name };
@@ -231,13 +234,19 @@ public static partial class AiTools
         if (!operand.IsNode) throw new AiToolException("edit_operation takes an operation node (N…); use update_primitive for primitives");
         var node = tree.Find(operand.NodeId)!;
         if (node.Op.IsWarp()) return EditWarp(doc, tree, node, args);
-        if (args.Select(kv => kv.Key).Where(key => key is not ("ref" or "op" or "k")).ToList() is { Count: > 0 } extra)
-            throw new AiToolException($"{node.Name} is a {OpName(node.Op)}: it only takes op and k (got {string.Join(", ", extra)}); " +
+        if (!node.Op.IsCsg() && args.ContainsKey("op") && !string.Equals(Str(args, "op"), OpName(node.Op), StringComparison.OrdinalIgnoreCase))
+            throw new AiToolException($"{node.Name} is a {OpName(node.Op)}; it can't change type (delete it and create a new one)");
+        if (node.Op.IsModifier()) return EditModifier(doc, tree, node, args);
+        if (node.Op == FrepOp.Pipe) return EditPipe(doc, tree, node, args);
+        if (args.Select(kv => kv.Key).Where(key => key is not ("ref" or "op" or "k" or "style" or "steps")).ToList() is { Count: > 0 } extra)
+            throw new AiToolException($"{node.Name} is a {OpName(node.Op)}: it only takes op, k, style and steps (got {string.Join(", ", extra)}); " +
                                       "deform fields apply to twist / bend / repeat nodes");
         var op = args.ContainsKey("op") ? ParseOp(Str(args, "op")) : node.Op;
         var k = args.ContainsKey("k") ? Math.Max(0, AiShapes.Number(args, "k")) : node.K;
-        Mutate(doc, $"edit {node.Name}", () => FrepTrees.Set(doc, tree.WithOp(node.Id, op, k), $"AI: edit {node.Name}"));
-        return new JsonObject { ["ref"] = node.Name, ["op"] = OpName(op), ["k"] = AiShapes.Round(k) };
+        var (style, steps) = StyleArgs(args, node);
+        var t = tree.WithOp(node.Id, op, k).WithParam(node.Id, 0, (int)style).WithParam(node.Id, 1, steps);
+        Mutate(doc, $"edit {node.Name}", () => FrepTrees.Set(doc, t, $"AI: edit {node.Name}"));
+        return DescribeCsg(doc, FrepTrees.Get(doc).Find(node.Id)!, null);
     }
 
     /// Deletes nodes and primitives. recursive: also everything under the given nodes that nothing else uses.

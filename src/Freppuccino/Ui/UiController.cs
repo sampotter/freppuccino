@@ -24,7 +24,7 @@ public sealed class UiController : IDisposable
     static readonly HashSet<string> AllowedCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "FBox", "FSphere", "FCylinder", "FCone", "FPyramid", "FEllipsoid", "FTorus",
-        "FTwist", "FBend", "FRepeat", "Freppuccino",
+        "FTwist", "FBend", "FRepeat", "FShell", "FGyroid", "FPipe", "Freppuccino",
     };
 
     /// Selected operation nodes per doc (runtime serial), in pick order.
@@ -184,6 +184,9 @@ public sealed class UiController : IDisposable
         FrepOp.Twist => OperationKind.Twist,
         FrepOp.Bend => OperationKind.Bend,
         FrepOp.Repeat => OperationKind.Repeat,
+        FrepOp.Shell => OperationKind.Shell,
+        FrepOp.Gyroid => OperationKind.Gyroid,
+        FrepOp.Pipe => OperationKind.Pipe,
         _ => throw new ArgumentOutOfRangeException(nameof(op)),
     };
 
@@ -208,18 +211,22 @@ public sealed class UiController : IDisposable
             var children = n.Operands.Select(o => o.IsNode
                 ? (tree.Find(o.NodeId) is { } child ? Node(child) : Missing(NodeKey(o.NodeId)))
                 : Primitive(doc, o.ObjectId)).ToList();
-            if (n.Op.IsWarp())
+            if (!n.Op.IsCsg())
             {
+                // Warps / modifiers / pipes: their params by name; a ref (line / box / curve) for warps and pipes.
                 var names = n.Op.ParamNames();
-                bool refOk = doc.Objects.FindId(n.Ref) is { IsDeleted: false } r && FrepRefs.Fits(n.Op, r.Geometry);
+                var r = n.Op.HasRef() && doc.Objects.FindId(n.Ref) is { IsDeleted: false } o && FrepRefs.Fits(n.Op, o.Geometry) ? o : null;
                 return built[n.Id] = new SceneNode(
                     Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
                     Op: ToKind(n.Op), Params: names.Select((name, i) => (name, i)).ToDictionary(x => x.name, x => n.Param(x.i)),
-                    Children: children, Ref: ObjectKey(n.Ref), RefMissing: refOk ? null : true);
+                    Children: children, Ref: n.Op.HasRef() ? ObjectKey(n.Ref) : null, RefMissing: n.Op.HasRef() && r == null ? true : null,
+                    // A pipe is drawn in its curve's SDF.Color.
+                    Color: n.Op == FrepOp.Pipe && r != null ? SdfUserText.FormatColor(SdfUserText.ReadColorOrDefault(r.Attributes)) : null);
             }
             return built[n.Id] = new SceneNode(
                 Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
-                Op: ToKind(n.Op), K: n.K, Children: children);
+                Op: ToKind(n.Op), K: n.K, Children: children,
+                Params: new Dictionary<string, double> { ["style"] = (int)n.Style(), ["steps"] = n.ParamCount >= 2 ? n.Steps() : 4 });
         }
 
         var roots = tree.Nodes.Where(n => !tree.IsReferenced(FrepOperand.Node(n.Id))).Select(Node).ToList();
@@ -306,6 +313,8 @@ public sealed class UiController : IDisposable
 
     static void CollectObjects(FrepTree tree, FrepNode node, HashSet<Guid> into)
     {
+        // A pipe's geometry is its curve: selecting the node puts the gumball on it.
+        if (node.Op == FrepOp.Pipe && node.Ref != Guid.Empty) into.Add(node.Ref);
         foreach (var o in node.Operands)
         {
             if (!o.IsNode) into.Add(o.ObjectId);
@@ -581,7 +590,8 @@ public sealed class UiController : IDisposable
             web.Send(new NoticeMessage("warning", "Select two top-level nodes."));
             return;
         }
-        var (tree, node) = tree0.Add(op, Math.Max(0, request.K), operands);
+        var style = request.Style is >= 0 and <= 2 ? (BlendStyle)request.Style : BlendStyle.Round;
+        var (tree, node) = tree0.Add(op, Math.Max(0, request.K), operands, style, Math.Clamp(request.Steps, 1, FrepOps.MaxSteps));
         FrepTrees.Set(doc, tree, $"F-rep {request.Op}");
         // Select the new node, like the page expects after "Apply".
         doc.Objects.UnselectAll();
@@ -594,7 +604,7 @@ public sealed class UiController : IDisposable
     {
         if (ParseKind(request.Op) is not { } op) throw new JsonException($"unknown op '{request.Op}'");
         var tree = FrepTrees.Get(doc);
-        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node || node.Op.IsWarp()) return;
+        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node || !node.Op.IsCsg()) return;
         var k = Math.Max(0, request.K);
         // Previews apply live; the final message records the whole gesture as one undo step.
         if (node.Op != op || node.K != k) FrepTrees.Preview(doc, tree.WithOp(id, op, k), $"Edit {node.Name}");
@@ -607,7 +617,10 @@ public sealed class UiController : IDisposable
         if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node) return;
         int i = node.Op.ParamNames().ToList().IndexOf(request.Name);
         if (i < 0 || !double.IsFinite(request.Value)) throw new JsonException($"bad param '{request.Name}' for {node.Name}");
-        if (node.Param(i) != request.Value) FrepTrees.Preview(doc, tree.WithParam(id, i, request.Value), $"Edit {node.Name}");
+        var next = tree.WithParam(id, i, request.Value);
+        // A CSG node from before blend styles has no steps yet: give stairs the same default as new nodes.
+        if (node.Op.IsCsg() && i == 0 && node.ParamCount < 2) next = next.WithParam(id, 1, 4);
+        if (node.Param(i) != request.Value) FrepTrees.Preview(doc, next, $"Edit {node.Name}");
         if (!request.Preview) FrepTrees.Commit(doc);
     }
 
@@ -618,8 +631,11 @@ public sealed class UiController : IDisposable
     /// (silently) and then writes the new one in an undo record, so the whole drag is one undo step.
     void SetColor(RhinoDoc doc, SetColorRequest request)
     {
-        if (!Guid.TryParse(request.Id, out var id) || doc.Objects.FindId(id) is not { IsDeleted: false } obj ||
-            SdfUserText.ReadType(obj.Attributes) == null)
+        // A pipe node's color lives on its curve.
+        var tree = FrepTrees.Get(doc);
+        bool pipe = TryNode(tree, request.Id, out var nodeId) && tree.Find(nodeId) is { Op: FrepOp.Pipe };
+        var id = pipe ? tree.Find(nodeId)!.Ref : Guid.TryParse(request.Id, out var g0) ? g0 : Guid.Empty;
+        if (doc.Objects.FindId(id) is not { IsDeleted: false } obj || (!pipe && SdfUserText.ReadType(obj.Attributes) == null))
             return;
         if (!SdfUserText.TryParseColor(request.Color, out var color)) throw new JsonException($"bad color '{request.Color}'");
 

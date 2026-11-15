@@ -5,8 +5,13 @@
 export type Id = string
 
 export type OperationKind = 'union' | 'subtract' | 'intersect'
-/** Domain warps of one child (children[0]), shaped by a Rhino line (twist, bend) or box (repeat). */
-export type DeformKind = 'twist' | 'bend' | 'repeat'
+/**
+ * Single-input nodes with params: domain warps of one child (children[0]) shaped by a Rhino line (twist, bend) or box
+ * (repeat); modifiers of one child (shell, gyroid; no ref); and pipe (no children; ref = the curve it follows).
+ */
+export type DeformKind = 'twist' | 'bend' | 'repeat' | 'shell' | 'gyroid' | 'pipe'
+/** CSG blend style (params.style on an operation): 0 round, 1 chamfer, 2 stairs (params.steps terraces). */
+export type BlendStyle = 0 | 1 | 2
 
 /**
  * One row in the browser tree. Primitives (Rhino objects with SDF.* user text) are leaves;
@@ -21,7 +26,8 @@ export interface SceneNode {
   locked: boolean
   /** primitive: IQ function name, e.g. "sdSphere", "sdBox" */
   sdfType?: string
-  /** primitive: SDF.<param> values without the prefix, e.g. { s: 1 } or { "b.x": 1, "b.y": 2, "b.z": 3 } */
+  /** primitive: SDF.<param> values without the prefix, e.g. { s: 1 } or { "b.x": 1, "b.y": 2, "b.z": 3 };
+   *  deform: its params by name; CSG operation: { style, steps } */
   params?: Record<string, number>
   /** operation */
   op?: OperationKind | DeformKind
@@ -30,11 +36,12 @@ export interface SceneNode {
   children?: SceneNode[]
   /** operand whose object / node was deleted */
   missing?: boolean
-  /** deform: Rhino id of its axis line / box (deform params are in `params`: twist angle; bend angle, direction; repeat x, y, z) */
+  /** deform: Rhino id of its axis line / box / curve (params: twist angle; bend angle, direction; repeat x, y, z;
+   *  shell thickness; gyroid cell, thickness, skin; pipe radius, endRadius). None for shell / gyroid. */
   ref?: Id
-  /** deform: ref deleted or no longer a line / box (child drawn unwarped) */
+  /** deform: ref deleted or no longer a line / box / curve (warp child drawn unwarped; pipe not drawn) */
   refMissing?: boolean
-  /** primitive: SDF.Color "#RRGGBB" used by the viewport shader (white if the object has none) */
+  /** primitive (pipe: its curve's): SDF.Color "#RRGGBB" used by the viewport shader (white if the object has none) */
   color?: string
   /** primitive: a gumball scale or shear the parameters cannot express (SDF.Linear.*). Sliders are hidden. */
   custom?: boolean
@@ -61,7 +68,7 @@ export type SelectMode = 'replace' | 'add' | 'toggle'
 /** Must match UiController.AllowedCommands */
 export type AllowedCommand =
   | 'FBox' | 'FSphere' | 'FCylinder' | 'FCone' | 'FPyramid' | 'FEllipsoid' | 'FTorus'
-  | 'FTwist' | 'FBend' | 'FRepeat'
+  | 'FTwist' | 'FBend' | 'FRepeat' | 'FShell' | 'FGyroid' | 'FPipe'
   | 'Freppuccino'
 
 export type UiMessage =
@@ -76,7 +83,7 @@ export type UiMessage =
   /** Writes SDF.Color ("#RRGGBB") on a primitive; preview as setOperation (one undo step per gesture). */
   | { type: 'setColor'; id: Id; color: string; preview?: boolean }
   /** New CSG node over ≥ 2 primitives / nodes. For subtract, operands[0] is the target. */
-  | { type: 'applyOperation'; operands: Id[]; op: OperationKind; k: number }
+  | { type: 'applyOperation'; operands: Id[]; op: OperationKind; k: number; style?: BlendStyle; steps?: number }
   /** preview: live drag tick, no undo; the next non-preview setOperation ends the gesture as one undo step. */
   | { type: 'setOperation'; id: Id; op: OperationKind; k: number; preview?: boolean }
   /** One deform param; preview as setOperation. */

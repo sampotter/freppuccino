@@ -34,6 +34,27 @@ public static class FrepRefs
         return false;
     }
 
-    public static bool Fits(FrepOp op, GeometryBase? g) =>
-        op == FrepOp.Repeat ? TryBox(g, out _) : TryLine(g, out _);
+    /// Any curve with nonzero length (open or closed) for a Pipe.
+    public static bool TryCurve(GeometryBase? g, out Curve curve)
+    {
+        curve = null!;
+        if (g is not Curve c || !c.IsValid || c.GetLength() <= Tol) return false;
+        curve = c;
+        return true;
+    }
+
+    public static bool Fits(FrepOp op, GeometryBase? g) => op switch
+    {
+        FrepOp.Repeat => TryBox(g, out _),
+        FrepOp.Pipe => TryCurve(g, out _),
+        _ => TryLine(g, out _),
+    };
+
+    /// What a node's reference object must be, for prompts and panel notes.
+    public static string RefKind(FrepOp op) => op switch
+    {
+        FrepOp.Repeat => "box",
+        FrepOp.Pipe => "curve",
+        _ => "axis line",
+    };
 }

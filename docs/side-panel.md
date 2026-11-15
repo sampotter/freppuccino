@@ -95,6 +95,6 @@ SceneNode { id, kind: primitive|operation, name?, visible, locked, missing?,
 
 `UiController.BuildScene` walks the doc's `FrepTree` (Csg/FrepTree.cs, stored as plugin document data): roots are nodes nothing references, then primitives no node uses. The tree is a DAG, so a shared operand is listed under each parent. Deleted operands show as `missing`.
 
-Operation nodes aren't Rhino objects, so their selection is kept by `UiController` (per document). FUnion/FIntersect (and FTwist/FBend/FRepeat, single node) take it as preselection (`UiController.TakeSelectedNodes`); Rhino deselect-all clears it.
+Operation nodes aren't Rhino objects, so their selection is kept by `UiController` (per document). FUnion/FIntersect (and FTwist/FBend/FRepeat/FShell/FGyroid, single node) take it as preselection (`UiController.TakeSelectedNodes`); Rhino deselect-all clears it.
 
 Inspector: one primitive → its color (`SDF.Color`: current-color swatch / picker + hex field; new primitives start white `#FCFCFC`) and parameters; one node → edit op / k live (no Update button), delete; ≥ 2 selected → combine them (pick order; first = subtract target).

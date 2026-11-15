@@ -30,7 +30,35 @@ Programs:
 
 FZebra (`Commands/FZebraCommand.cs`, window `Ui/ZebraOptionsForm.cs`, session-only `FrepSettings.Zebra*`): like Rhino's Zebra, the command opens a modeless "Zebra Options" window (stripe direction vertical/horizontal, stripe size thin↔thick, two stripe colors, all live); zebra is on while it is open, closing it (or `FZebraOff`) turns it off. Header row `zebraCfg` = (stripe count, 0 = off; 1 vertical / 0 horizontal; color 1; color 2 as packed 0xRRGGBB). `sceneColor()` also flags hits within the pixel tolerance of any FUnion node's surface (fillets included); those pixels are drawn unlit in bands of the reflected view direction's angle from the camera's right (vertical) or up (horizontal) axis. Uniforms only, so changing options never recompiles.
 
-Header (8 vec4 rows, `HeaderRows`): camPos, camX, camY, camZ, frustum, params, bound, zebraCfg. Then data rows in `Compile()` order: prims (sphere 1 row, others 3), prim colors (4 per row), warp rows (one block per live warp, tree order), node k's (4 per row). `PrimRowBudget(tree)` = data rows − k rows − warp rows (prims + their color rows must fit); prims past it are dropped.
+Header (8 vec4 rows, `HeaderRows`): camPos, camX, camY, camZ, frustum, params, bound, zebraCfg. Then data rows in `Compile()` order: prims (sphere 1 row, others 3), prim colors (4 per row), node rows (one block per live warp / shell / gyroid / live pipe, tree order = `FrepSceneData.RowNodes`), then CSG nodes' (k, blend style code) pairs (2 per row). `PrimRowBudget(tree)` = data rows − k rows − node rows (prims + their color rows must fit); prims past it are dropped.
+
+### Blend styles (FUnion / FIntersect / FDifference `Style`, `Steps`)
+
+CSG nodes store `Params = [style, steps]` (empty = round, as in files from before 1.3). The shader gets one float per node next to its k: `code = style + 4 · steps` (`Csg/FrepNodeMath.BlendCode`), decoded in `bmin` / `bmax`, so switching style never recompiles. k is the blend size for every style.
+
+| Style | Join (union; intersect/difference via `bmax(a, b) = −bmin(−a, −b)`) | Notes |
+|---|---|---|
+| Round (0) | IQ quadratic `smin` | as before |
+| Chamfer (1) | `min(a, b, (a + b − k) / 2)` | hg_sdf's 45° bevel scaled by ½ instead of 1/√2: same surface, Lipschitz 1 for any angle between the surfaces. Bevel legs = k. |
+| Stairs (2) | hg_sdf `fOpUnionStairs(a, b, k, steps)` | GLSL `mod` (floored); the mesher ports it with `Math.Floor`, not `%`. |
+
+Colors fade with the round weight for every style. Bounds: chamfer / stairs unions sink by ≤ k/2 per join (`FrepNodeMath.UnionGrowth`), used by `Bound` and `FrepField.Bounds`.
+
+### Shell / Gyroid / Pipe (FShell / FGyroid / FPipe)
+
+Shared row math: `Csg/FrepNodeMath.cs` (feeds the shader uniforms and the mesher, like `FrepWarpMath` for warps). All three keep the field Lipschitz ≤ 1.
+
+| Op | Operands / Ref | Params | Rows | Behaviour |
+|---|---|---|---|---|
+| Shell | 1 child, no ref | thickness | 1: (t) | `max(d, −d − t)`: wall just inside the surface, outside unchanged; t ≤ 0 = off. Closed cavity: cut it open with FDifference. |
+| Gyroid | 1 child, no ref | cell, thickness, skin | 1: (ω = 2π/cell, level, 1/(ω√3), skin) | `max(d, (|g(ωp)| − level) / (ω√3))`, g = gyroid. max\|∇g\| = √3 (exact), so it never overestimates; level = ω · 1.528 · t / 2 makes the sheet volume = area × thickness (1.528 = mean \|∇g\| on g = 0, measured). skin > 0: `min(·, max(d, −d − skin))`. Lattice fixed in world space; evaluated in the node's point context, so a warp above it warps the lattice too. |
+| Pipe | no operands; ref = curve | radius, endRadius | 1 + 32: (lip, count, −, color), (point, radius) × 32 | curve sampled to ≤ 32 points (`FrepNodeMath.Make`: polylines exact, else adaptive by angle/chord, else divided by count), radius linear by length; per segment `|p − seg| − mix(r0, r1, h)`, round caps, divided by max √(1 + (Δr/ℓ)²). Color = the curve's `SDF.Color` (white default), editable from the panel. Fixed row count, so editing the curve never recompiles. |
+
+- Codegen: Shell / Gyroid wrap their child's value at the same point context; Pipe is a leaf (`sdPipe(p, rowBase)` loops over its rows).
+- Missing cases: shell / gyroid with child missing → empty; pipe whose curve is deleted or not a curve → empty (panel says so); hidden → absent.
+- Drags: pipe curves under a gumball drag move their sampled points (`SdPipe.Transformed`), like warp refs.
+- `bound`: shell / gyroid = child's box (they only remove material); pipe = points ± largest radius.
+- Mesher (`Meshing/FrepField.cs`): `Modify` / `Pipe` / `Bmin` are line-for-line ports of `opShell` / `opGyroid` / `sdPipe` / `bmin`; keep in sync.
 
 ### Warps (FTwist / FBend / FRepeat)
 
