@@ -5,8 +5,13 @@
 export type Id = string
 
 export type OperationKind = 'union' | 'subtract' | 'intersect'
-/** Domain warps of one child (children[0]), shaped by a Rhino line (twist, bend) or box (repeat). */
-export type DeformKind = 'twist' | 'bend' | 'repeat'
+/**
+ * Domain warps of one child (children[0]), shaped by a Rhino line (twist, bend) or box (repeat); and displace, a surface
+ * texture on children[0] (children[1] = optional mask, not drawn; ref = optional knurl axis line).
+ */
+export type DeformKind = 'twist' | 'bend' | 'repeat' | 'displace'
+/** displace params.pattern */
+export type DisplacePattern = 0 | 1 | 2
 
 /**
  * One row in the browser tree. Primitives (Rhino objects with SDF.* user text) are leaves;
@@ -32,7 +37,7 @@ export interface SceneNode {
   missing?: boolean
   /** deform: Rhino id of its axis line / box (deform params are in `params`: twist angle; bend angle, direction; repeat x, y, z) */
   ref?: Id
-  /** deform: ref deleted or no longer a line / box (child drawn unwarped) */
+  /** deform: ref deleted or no longer a line / box (child drawn unwarped; displace: knurl falls back to a vertical axis) */
   refMissing?: boolean
   /** primitive: SDF.Color "#RRGGBB" used by the viewport shader (white if the object has none) */
   color?: string
@@ -61,7 +66,7 @@ export type SelectMode = 'replace' | 'add' | 'toggle'
 /** Must match UiController.AllowedCommands */
 export type AllowedCommand =
   | 'FBox' | 'FSphere' | 'FCylinder' | 'FCone' | 'FPyramid' | 'FEllipsoid' | 'FTorus'
-  | 'FTwist' | 'FBend' | 'FRepeat'
+  | 'FTwist' | 'FBend' | 'FRepeat' | 'FDisplace'
   | 'Freppuccino'
 
 export type UiMessage =

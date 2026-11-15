@@ -26,6 +26,14 @@ always: true
   patterns of identical features (studs, pickets, holes). Load the deformations skill before using them.
 - Repeat beats creating many identical primitives: it is one primitive in the shader budget, and edits apply to every copy.
 
+## Textures (texture tool)
+- texture(target, pattern, amplitude, scale, mask?) adds surface detail to a finished part: knurl for tool / flashlight /
+  knob grips (diamonds wrap around axis_start → axis_end; default vertical through the part), voronoi for scales, pebbles,
+  leather or cracked glaze, perlin for organic skin, rock, bark or hammered metal.
+- Sizes: scale ~3-10% of the part, amplitude ~a quarter of scale (0.3 mm on a handle, a few mm on a boulder). Negative
+  amplitude engraves. Too much amplitude for the scale looks spiky and slows the viewport.
+- mask confines it: e.g. a cylinder or box around just the grip area; fade softens the edge. The mask is not drawn.
+
 ## CSG (combine)
 - Roots (anything not used by an operation) are all drawn, merged with a sharp union.
 - combine consumes its operands: they stop being roots. Build bottom-up: small sub-assemblies first (e.g. the handle),

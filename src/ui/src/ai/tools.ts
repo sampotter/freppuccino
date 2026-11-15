@@ -47,6 +47,21 @@ const DEFORM_FIELDS = {
   y_axis: vec3('repeat: optional lattice Y direction (default [0,1,0])'),
 }
 
+// Texture (Displace) fields: create with texture, change with edit_operation, read back from get_scene.
+const TEXTURE_FIELDS = {
+  pattern: {
+    type: 'string',
+    enum: ['perlin', 'voronoi', 'knurl'],
+    description: 'perlin = organic noise (skin, stone, hammered metal); voronoi = raised cells with grooves (scales, pebbles, leather); knurl = diamond grip wrapped around an axis',
+  },
+  amplitude: { type: 'number', description: 'texture height in model units; negative engraves instead of raising. Keep it ≤ about a third of scale' },
+  scale: { type: 'number', description: 'feature size: noise blob / cell size, or knurl pitch (distance between teeth)' },
+  mask: { type: 'string', description: 'optional primitive or node ref marking where the texture goes (e.g. a box around the grip area of a handle); it is not drawn. edit_operation: "" removes it' },
+  fade: { type: 'number', description: 'with a mask: distance outside the mask over which the texture fades out (default: a tenth of the part size)' },
+  axis_start: vec3('knurl: start of the axis the diamonds wrap around (default: vertical through the center of the target)'),
+  axis_end: vec3('knurl: end of that axis'),
+}
+
 const TYPES = ['sphere', 'box', 'ellipsoid', 'cylinder', 'cone', 'torus', 'pyramid']
 
 function tool(name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []): ToolDef {
@@ -124,6 +139,14 @@ export const TOOLS: ToolDef[] = [
     ['op', 'target'],
   ),
   tool(
+    'texture',
+    'Adds a surface texture to a primitive or node (target): grip knurling, organic skin, scales, stone. The surface moves out by ' +
+      'up to amplitude (in by up to -amplitude). Use mask to texture only part of it (the mask is consumed and not drawn). ' +
+      'Texture the finished part (its top node); textures stack (e.g. voronoi scales, then fine perlin). Returns the node ref (N#).',
+    { target: { type: 'string', description: 'primitive or node ref to texture' }, ...TEXTURE_FIELDS },
+    ['target', 'pattern'],
+  ),
+  tool(
     'edit_operation',
     "Changes an operation node: a CSG node's op and/or blend k, or a deform node's fields (omitted fields keep their value; " +
       "a deform can't change its op).",
@@ -132,6 +155,7 @@ export const TOOLS: ToolDef[] = [
       op: { type: 'string', enum: ['union', 'subtract', 'intersect'] },
       k: { type: 'number' },
       ...DEFORM_FIELDS,
+      ...TEXTURE_FIELDS,
     },
     ['ref'],
   ),
@@ -229,6 +253,8 @@ function summarize(name: string, args: Record<string, unknown>, result: Record<s
       return String(args.ref)
     case 'combine':
       return `${result.ref} = ${args.op}(${(args.operands as string[]).join(', ')})${args.k ? ` k=${args.k}` : ''}`
+    case 'texture':
+      return `${result.ref} = ${args.pattern}(${args.target})${args.mask ? ` in ${args.mask}` : ''}${result.warning ? ' ⚠' : ''}`
     case 'deform':
       return `${result.ref} = ${args.op}(${args.target})${result.warning ? ' ⚠' : ''}`
     case 'edit_operation':

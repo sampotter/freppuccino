@@ -28,6 +28,7 @@ public static partial class AiTools
         "transform" => TransformObjects(doc, args),
         "combine" => Combine(doc, args),
         "deform" => Deform(doc, args),
+        "texture" => Texture(doc, args),
         "edit_operation" => EditOperation(doc, args),
         "delete" => Delete(doc, args),
         "set_visible" => SetVisible(doc, args),
@@ -68,8 +69,8 @@ public static partial class AiTools
         var ops = new JsonArray();
         foreach (var n in tree.Nodes)
         {
-            var o = n.Op.IsWarp()
-                ? DescribeWarp(doc, tree, n, refs)
+            var o = n.Op.IsWarp() ? DescribeWarp(doc, tree, n, refs)
+                : n.Op == FrepOp.Displace ? DescribeDisplace(doc, n, refs)
                 : new JsonObject
                 {
                     ["ref"] = n.Name,
@@ -148,7 +149,7 @@ public static partial class AiTools
         // Warps under the targets move with them: their reference lines / boxes get the same transform.
         var subtree = new HashSet<FrepOperand>(targets);
         foreach (var t in targets) AddDescendants(tree, t, subtree);
-        var warps = subtree.Where(o => o.IsNode).Select(o => tree.Find(o.NodeId)).OfType<FrepNode>().Where(n => n.Op.IsWarp()).ToList();
+        var warps = subtree.Where(o => o.IsNode).Select(o => tree.Find(o.NodeId)).OfType<FrepNode>().Where(n => n.Op.IsWarp() || (n.Op == FrepOp.Displace && n.Ref != Guid.Empty)).ToList();
 
         var bbox = BoundingBox.Empty;
         foreach (var o in leaves) bbox.Union(o.Geometry.GetBoundingBox(true));
@@ -189,12 +190,17 @@ public static partial class AiTools
             foreach (var (obj, prim) in updates) FrepPrimitives.Replace(doc, obj, prim);
             foreach (var refId in warps.Select(n => n.Ref).Distinct())
                 if (doc.Objects.FindId(refId) is { IsDeleted: false }) doc.Objects.Transform(refId, xf, true);
-            // Repeat spacing follows a uniform scale (twist / bend follow their line).
-            if (args["scale"] is JsonValue && AiShapes.Number(args, "scale") is var f && f > 0 && warps.Any(n => n.Op == FrepOp.Repeat))
+            // Repeat spacing and texture sizes (amplitude, scale, fade) follow a uniform scale (twist / bend follow their line).
+            var textures = subtree.Where(o => o.IsNode).Select(o => tree.Find(o.NodeId)).OfType<FrepNode>()
+                .Where(n => n.Op == FrepOp.Displace).ToList();
+            if (args["scale"] is JsonValue && AiShapes.Number(args, "scale") is var f && f > 0 &&
+                (warps.Any(n => n.Op == FrepOp.Repeat) || textures.Count > 0))
             {
                 var t = FrepTrees.Get(doc);
                 foreach (var n in warps.Where(n => n.Op == FrepOp.Repeat))
                     for (int i = 0; i < 3; i++) t = t.WithParam(n.Id, i, n.Param(i) * f);
+                foreach (var n in textures)
+                    for (int i = 1; i < 4; i++) t = t.WithParam(n.Id, i, n.Param(i) * f);
                 FrepTrees.Set(doc, t, "AI: transform");
             }
         });
@@ -231,6 +237,7 @@ public static partial class AiTools
         if (!operand.IsNode) throw new AiToolException("edit_operation takes an operation node (N…); use update_primitive for primitives");
         var node = tree.Find(operand.NodeId)!;
         if (node.Op.IsWarp()) return EditWarp(doc, tree, node, args);
+        if (node.Op == FrepOp.Displace) return EditDisplace(doc, tree, node, args);
         if (args.Select(kv => kv.Key).Where(key => key is not ("ref" or "op" or "k")).ToList() is { Count: > 0 } extra)
             throw new AiToolException($"{node.Name} is a {OpName(node.Op)}: it only takes op and k (got {string.Join(", ", extra)}); " +
                                       "deform fields apply to twist / bend / repeat nodes");

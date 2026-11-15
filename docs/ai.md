@@ -33,13 +33,14 @@ src/ui/src/components/ai-panel.tsx   chat UI
 src/Freppuccino/Ai/
   AiTools.cs      tool implementations ("aiTool" message → AiToolResultMessage)
   AiWarps.cs      deform tool: twist / bend / repeat nodes + the axis lines / boxes that drive them
+  AiDisplace.cs   texture tool: perlin / voronoi / knurl Displace nodes (+ optional mask, knurl axis line)
   AiShapes.cs     LLM-friendly shape specs ⇄ SdPrimitive (cylinder = start/end/radius, box = center/size, …)
   AiCapture.cs    offscreen screenshots in the hidden "Freppuccino Capture" display mode (proxy Breps invisible)
   AiRunLog.cs     saves each run (transcript + PNGs)
 src/Freppuccino/Scene/FrepPrimitives.cs   SdPrimitive → SDF.* user text + proxy Brep, add / replace in the doc
 ```
 
-Tools: `get_scene`, `create_primitive`, `update_primitive`, `transform`, `combine`, `deform`, `edit_operation`, `delete`,
+Tools: `get_scene`, `create_primitive`, `update_primitive`, `transform`, `combine`, `deform`, `texture`, `edit_operation`, `delete`,
 `set_visible`, `clear_scene`, `capture_views`, `load_skill`. Objects are addressed by name (unique names are enforced), GUID, or node
 name (`N3`). Primitives take a `color`.
 

@@ -24,7 +24,7 @@ public sealed class UiController : IDisposable
     static readonly HashSet<string> AllowedCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "FBox", "FSphere", "FCylinder", "FCone", "FPyramid", "FEllipsoid", "FTorus",
-        "FTwist", "FBend", "FRepeat", "Freppuccino",
+        "FTwist", "FBend", "FRepeat", "FDisplace", "Freppuccino",
     };
 
     /// Selected operation nodes per doc (runtime serial), in pick order.
@@ -184,6 +184,7 @@ public sealed class UiController : IDisposable
         FrepOp.Twist => OperationKind.Twist,
         FrepOp.Bend => OperationKind.Bend,
         FrepOp.Repeat => OperationKind.Repeat,
+        FrepOp.Displace => OperationKind.Displace,
         _ => throw new ArgumentOutOfRangeException(nameof(op)),
     };
 
@@ -208,14 +209,16 @@ public sealed class UiController : IDisposable
             var children = n.Operands.Select(o => o.IsNode
                 ? (tree.Find(o.NodeId) is { } child ? Node(child) : Missing(NodeKey(o.NodeId)))
                 : Primitive(doc, o.ObjectId)).ToList();
-            if (n.Op.IsWarp())
+            if (n.Op.HasParams())
             {
+                // Warps / displace: params by name. Displace's ref (knurl axis) is optional: none = no Ref, not missing.
                 var names = n.Op.ParamNames();
+                bool hasRef = n.Op.IsWarp() || n.Ref != Guid.Empty;
                 bool refOk = doc.Objects.FindId(n.Ref) is { IsDeleted: false } r && FrepRefs.Fits(n.Op, r.Geometry);
                 return built[n.Id] = new SceneNode(
                     Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
                     Op: ToKind(n.Op), Params: names.Select((name, i) => (name, i)).ToDictionary(x => x.name, x => n.Param(x.i)),
-                    Children: children, Ref: ObjectKey(n.Ref), RefMissing: refOk ? null : true);
+                    Children: children, Ref: hasRef ? ObjectKey(n.Ref) : null, RefMissing: hasRef && !refOk ? true : null);
             }
             return built[n.Id] = new SceneNode(
                 Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
@@ -594,7 +597,7 @@ public sealed class UiController : IDisposable
     {
         if (ParseKind(request.Op) is not { } op) throw new JsonException($"unknown op '{request.Op}'");
         var tree = FrepTrees.Get(doc);
-        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node || node.Op.IsWarp()) return;
+        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node || !node.Op.IsCsg()) return;
         var k = Math.Max(0, request.K);
         // Previews apply live; the final message records the whole gesture as one undo step.
         if (node.Op != op || node.K != k) FrepTrees.Preview(doc, tree.WithOp(id, op, k), $"Edit {node.Name}");

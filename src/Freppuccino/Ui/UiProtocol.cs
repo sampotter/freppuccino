@@ -38,6 +38,9 @@ public static class OperationKind
     public const string Twist = "twist";
     public const string Bend = "bend";
     public const string Repeat = "repeat";
+    /// Surface texture of children[0]; children[1] = optional mask (not drawn). Params pattern (0 Perlin, 1 Voronoi, 2 knurl),
+    /// amplitude, scale, fade. Ref = knurl axis line, or absent (vertical through the child's centre).
+    public const string Displace = "displace";
 }
 
 /// <summary>

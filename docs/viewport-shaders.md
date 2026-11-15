@@ -30,7 +30,7 @@ Programs:
 
 FZebra (`Commands/FZebraCommand.cs`, window `Ui/ZebraOptionsForm.cs`, session-only `FrepSettings.Zebra*`): like Rhino's Zebra, the command opens a modeless "Zebra Options" window (stripe direction vertical/horizontal, stripe size thin↔thick, two stripe colors, all live); zebra is on while it is open, closing it (or `FZebraOff`) turns it off. Header row `zebraCfg` = (stripe count, 0 = off; 1 vertical / 0 horizontal; color 1; color 2 as packed 0xRRGGBB). `sceneColor()` also flags hits within the pixel tolerance of any FUnion node's surface (fillets included); those pixels are drawn unlit in bands of the reflected view direction's angle from the camera's right (vertical) or up (horizontal) axis. Uniforms only, so changing options never recompiles.
 
-Header (8 vec4 rows, `HeaderRows`): camPos, camX, camY, camZ, frustum, params, bound, zebraCfg. Then data rows in `Compile()` order: prims (sphere 1 row, others 3), prim colors (4 per row), warp rows (one block per live warp, tree order), node k's (4 per row). `PrimRowBudget(tree)` = data rows − k rows − warp rows (prims + their color rows must fit); prims past it are dropped.
+Header (8 vec4 rows, `HeaderRows`): camPos, camX, camY, camZ, frustum, params, bound, zebraCfg. Then data rows in `Compile()` order: prims (sphere 1 row, others 3), prim colors (4 per row), warp rows (one block per live warp, tree order), displace rows (4 per visible Displace node, tree order), node k's (4 per row). `PrimRowBudget(tree)` = data rows − k rows − warp / displace rows (prims + their color rows must fit); prims past it are dropped.
 
 ### Warps (FTwist / FBend / FRepeat)
 
@@ -49,6 +49,25 @@ One operand each. Node stores `Ref` (Guid of a Rhino line or box, read live via 
 - Shared math: `Csg/FrepWarpMath.cs` (ref resolution, `SdWarp` extent/anchor, packed rows, bend frame) feeds both the shader uniforms and the mesher.
 - Mesher (`Meshing/FrepField.cs`): line-for-line port of `opTwist`/`opBend`/`opRepeat` with per-warp point contexts; keep in sync with the GLSL. Only diff: repeat rounds halves away from zero (GLSL `round` is driver-defined on exact cell boundaries).
 - Known: bend `lip` jumps between arc and straight regions (field shrinks, surface unaffected); twist/bend Lipschitz clamp only holds within child extent; repeat assumes the child fits one cell.
+
+### Displace (FDisplace): surface textures
+
+One node: Operands = [child] or [child, mask], Params = pattern (0 Perlin, 1 Voronoi, 2 knurl), amplitude, scale, fade; Ref = optional knurl axis line. Everything is a uniform (4 rows, `Csg/FrepDisplaceMath.Rows`), so switching pattern or dragging a slider never recompiles.
+
+`opDisplace = (d − a · w · h(p)) / L`, with h ∈ [0, 1] the pattern height, a the amplitude (> 0 raises, < 0 engraves) and w ∈ [0, 1] the mask weight: `clamp(1 − max(m, 0) / fade, 0, 1)` for the mask's value m (1 inside, 0 beyond fade; fade ≥ 1% of scale so it is never a step). `L = 1 + |a| · (max|∇h| + 1/fade)` keeps the field Lipschitz 1, so raymarching and meshing stay safe; L is applied everywhere (also where w = 0) so the field stays continuous.
+
+| Pattern | h | max|∇h| (× 1/scale) |
+|---|---|---|
+| Perlin | `clamp(0.5 + 0.65 · fbm(p / scale))`, fbm = 3 octaves of quintic gradient noise (Perlin's 12 edge gradients), weights 1, ½, ¼ / 1.75 | 0.65 × 4.0: max|∇fbm| measured 3.52 over 3M samples (one octave 3.31; the all-octaves-aligned worst case 5.7 never occurs); 4.0 ≈ 15% margin |
+| Voronoi | `min((F2 − F1) / 0.24, 1)` in cell units (3×3×3 search, feature points kept 5% off the cell faces): raised cells, grooves between | 2 / 0.24 (F1, F2 are distances, Lipschitz 1 each) |
+| Knurl | `min(tri(θK + z/s), tri(θK − z/s))` around the axis, K = whole teeth / 2π (no seam at θ = ±π), faded in between 0.4 R and 0.7 R (R = child bbox corner distance from the axis / √2) | 2 √((K/0.4R)² + 1/s²) + 1/0.3R (exact bound) |
+
+- Hashing: PCG3D (Jarzynski & Olano 2020), integer-only, so CPU and GPU pick the same gradients / cell points.
+- Mask: not drawn (it is an operand, so not a root); hidden or deleted mask = textured everywhere. Objects under a mask are kept in the shader even when hidden (`FrepScene.MaskObjects`), since users hide them.
+- Knurl axis: the Ref line (live, follows drags), else vertical through the child's bbox centre (recomputed on rebuild).
+- Bounds: child box grown by max(a, 0) (`Bound`, `FrepScene.Bounds`); mesher asks the child for `t · L + max(a, 0)`.
+- Mesher: `Meshing/FrepNoise.cs` is the line-for-line C# port (`FrepField` calls `FrepNoise.Displace`); keep in sync with the GLSL.
+- Validated (scratch harness): every pattern × positive / negative amplitude × masked stays Lipschitz ≤ 1 over 300k point pairs; bounds hold; knurl seam jump 0; DualContour meshes watertight.
 
 Original slice program (removed):
 

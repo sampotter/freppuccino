@@ -30,6 +30,10 @@ public readonly record struct SdPrimitive(SdKind Kind, Plane Frame, Vector3d P)
 /// Extent: child's max distance from the axis (Lipschitz bound clamp). Anchor: child bbox center (Repeat lattice origin).
 public readonly record struct SdWarp(FrepOp Op, Line Axis, Box Region, Point3d Anchor, double Extent, Vector3d P);
 
+/// One Displace node: params (FrepOps.ParamNames), whether it has a mask, the knurl axis (its Ref line, else vertical through
+/// the child's centre) and the knurl radius (from the child's bbox). Rows: Csg.FrepDisplaceMath.Rows.
+public readonly record struct SdDisplace(int Pattern, double Amplitude, double Scale, double Fade, bool HasMask, Line Axis, double Radius);
+
 /// Program == null: nothing to draw. Primitives/Colors/Warps/Ks feed <see cref="FrepShaderGen.SceneUniforms"/>.
 /// Colors parallel to Primitives: each owner's SDF.Color (white if missing).
 public sealed record FrepSceneData(ShaderSource? Program, IReadOnlyList<SdPrimitive> Primitives, IReadOnlyList<System.Drawing.Color> Colors,
@@ -40,6 +44,9 @@ public sealed record FrepSceneData(ShaderSource? Program, IReadOnlyList<SdPrimit
     public IReadOnlyList<Guid> Ids { get; init; } = [];
     /// Tree node ids, parallel to Warps.
     public IReadOnlyList<int> WarpIds { get; init; } = [];
+    /// Visible Displace nodes in uniform row order, and their node ids (parallel).
+    public IReadOnlyList<SdDisplace> Displaces { get; init; } = [];
+    public IReadOnlyList<int> DisplaceIds { get; init; } = [];
     /// The tree this was compiled from.
     public FrepTree Tree { get; init; } = FrepTree.Empty;
     public int Count => Primitives.Count;
@@ -56,6 +63,8 @@ public static class FrepScene
     static List<RhinoObject> owners = [];
     // Parallel to scene.Warps: the referenced line/box objects.
     static List<RhinoObject> warpOwners = [];
+    // Parallel to scene.Displaces: the knurl axis line, if the node has a live one.
+    static List<RhinoObject?> displaceOwners = [];
     static FrepTree tree = FrepTree.Empty; // the one scene was compiled from
     static uint docSerial;
     static bool dirty = true;
@@ -101,8 +110,21 @@ public static class FrepScene
             warps ??= [.. scene.Warps];
             warps[i] = w with { Axis = axis, Region = region };
         }
-        if (prims == null && warps == null) return scene;
-        var next = scene with { Primitives = prims ?? scene.Primitives, Warps = warps ?? scene.Warps };
+        // Knurl axis lines follow their drag too.
+        List<SdDisplace>? displaces = null;
+        for (int i = 0; i < displaceOwners.Count; i++)
+        {
+            if (displaceOwners[i] is not { } o || !o.GetDynamicTransform(out var xf) || xf.IsIdentity) continue;
+            var axis = scene.Displaces[i].Axis;
+            if (!axis.Transform(xf)) continue;
+            displaces ??= [.. scene.Displaces];
+            displaces[i] = scene.Displaces[i] with { Axis = axis };
+        }
+        if (prims == null && warps == null && displaces == null) return scene;
+        var next = scene with
+        {
+            Primitives = prims ?? scene.Primitives, Warps = warps ?? scene.Warps, Displaces = displaces ?? scene.Displaces,
+        };
         if (!reshaped || prims == null) return next;
 
         // A sphere stretched into an ellipsoid changes the shader's structure, so recompile (cached by source, so once
@@ -113,7 +135,7 @@ public static class FrepScene
                 if (prims[i].Kind != scene.Primitives[i].Kind) prims[i] = scene.Primitives[i];
             return next;
         }
-        var (program, ks, _) = FrepShaderGen.Compile(prims, scene.Ids, tree, scene.WarpIds.ToHashSet());
+        var (program, ks, _, _) = FrepShaderGen.Compile(prims, scene.Ids, tree, scene.WarpIds.ToHashSet());
         return next with { Program = program, Ks = ks };
     }
 
@@ -208,7 +230,14 @@ public static class FrepScene
         var newOwners = new List<RhinoObject>();
         var newIds = new List<Guid>();
         var settings = new ObjectEnumeratorSettings { VisibleFilter = true, HiddenObjects = false };
-        foreach (var obj in doc.Objects.GetObjectList(settings))
+        // Displace masks are never drawn, so users hide them; hidden objects under a mask still count.
+        var masks = MaskObjects(tree);
+        var visible = doc.Objects.GetObjectList(settings).ToList();
+        var seen = visible.Select(o => o.Id).ToHashSet();
+        var hiddenMasks = masks.Count == 0 ? []
+            : doc.Objects.GetObjectList(new ObjectEnumeratorSettings { HiddenObjects = true, LockedObjects = true, NormalObjects = true })
+                .Where(o => masks.Contains(o.Id) && !seen.Contains(o.Id));
+        foreach (var obj in visible.Concat(hiddenMasks))
         {
             if (!TryRead(obj.Attributes, out var prim)) continue;
             int r = FrepShaderGen.Rows(prim.Kind);
@@ -227,7 +256,7 @@ public static class FrepScene
         foreach (var n in tree.Nodes)
             if (FrepWarpMath.TryResolve(doc, n, out var obj, out var axis, out var region)) refs[n.Id] = (obj!, axis, region);
 
-        var (program, ks, warpIds) = FrepShaderGen.Compile(prims, newIds, tree, refs.Keys.ToHashSet());
+        var (program, ks, warpIds, displaceIds) = FrepShaderGen.Compile(prims, newIds, tree, refs.Keys.ToHashSet());
         var bounds = new Bounds(doc, tree, refs);
         var warps = new List<SdWarp>();
         var newWarpOwners = new List<RhinoObject>();
@@ -238,10 +267,39 @@ public static class FrepScene
             warps.Add(FrepWarpMath.Make(n, axis, region, bounds.Of(n.Operands[0])));
             newWarpOwners.Add(obj);
         }
+        // Displace: knurl axis = its line, else vertical through the child's (warped) bbox centre; radius from that bbox.
+        var displaces = new List<SdDisplace>();
+        var newDisplaceOwners = new List<RhinoObject?>();
+        foreach (var id in displaceIds)
+        {
+            var n = tree.Find(id)!;
+            var child = bounds.Of(n.Operands[0]);
+            var axis = FrepDisplaceMath.Axis(doc, n, child, out var axisObj);
+            displaces.Add(FrepDisplaceMath.Make(n, axis, child));
+            newDisplaceOwners.Add(axisObj);
+        }
 
-        scene = new FrepSceneData(program, prims, colors, warps, ks, dropped) { Ids = newIds, WarpIds = warpIds, Tree = tree };
+        scene = new FrepSceneData(program, prims, colors, warps, ks, dropped)
+        {
+            Ids = newIds, WarpIds = warpIds, Displaces = displaces, DisplaceIds = displaceIds, Tree = tree,
+        };
         owners = newOwners;
         warpOwners = newWarpOwners;
+        displaceOwners = newDisplaceOwners;
+    }
+
+    /// Objects under any visible Displace node's mask operand.
+    static HashSet<Guid> MaskObjects(FrepTree tree)
+    {
+        var ids = new HashSet<Guid>();
+        void Walk(FrepOperand o)
+        {
+            if (!o.IsNode) ids.Add(o.ObjectId);
+            else if (tree.Find(o.NodeId) is { } n) foreach (var c in n.Operands) Walk(c);
+        }
+        foreach (var n in tree.Nodes)
+            if (!n.Hidden && n.Mask is { } m) Walk(m);
+        return ids;
     }
 
     /// <see cref="Bounds"/> ignoring warps (no resolved refs); for command defaults.
@@ -272,7 +330,13 @@ public static class FrepScene
             }
             else if (tree.Find(o.NodeId) is { } n)
             {
-                if (n.Op == FrepOp.Difference && n.Operands.Length > 0) b = Of(n.Operands[0]);
+                // Displace: the child grown by the texture height (the mask isn't drawn).
+                if (n.Op == FrepOp.Displace)
+                {
+                    if (n.Operands.Length > 0) b = Of(n.Operands[0]);
+                    if (b.IsValid) b.Inflate(Math.Max(n.Param(1), 0));
+                }
+                else if (n.Op == FrepOp.Difference && n.Operands.Length > 0) b = Of(n.Operands[0]);
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && refs.TryGetValue(n.Id, out var r)) b = FrepShaderGen.Warped(b, FrepWarpMath.Make(n, r.Axis, r.Region, b));
             }

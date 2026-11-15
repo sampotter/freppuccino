@@ -36,13 +36,14 @@ public static class FrepShaderGen
         _ => 4,
     };
     /// Twist: (start, rate), (dir, extent). Bend: (start, length), (dir, angle), (bend normal, min radius). Repeat: see WarpUniforms.
-    static int WarpRows(FrepOp op) => op switch { FrepOp.Twist => 2, FrepOp.Bend => 3, FrepOp.Repeat => 5, _ => 0 };
+    /// Displace: 4 (opDisplace; layout in Meshing/FrepNoise.cs).
+    static int WarpRows(FrepOp op) => op switch { FrepOp.Twist => 2, FrepOp.Bend => 3, FrepOp.Repeat => 5, FrepOp.Displace => 4, _ => 0 };
     static int KRows(int nodes) => (nodes + 3) / 4;
     /// Rows holding the colors of <paramref name="prims"/> primitives (one packed 0xRRGGBB float each, 4 per row).
     public static int ColorRows(int prims) => (prims + 3) / 4;
     /// Rows left for prims (geometry + color rows) once every node's k / warp rows have a slot.
     public static int PrimRowBudget(FrepTree tree) =>
-        MaxDataRows - KRows(tree.Nodes.Count(n => !n.Op.IsWarp())) - tree.Nodes.Sum(n => n.Hidden ? 0 : WarpRows(n.Op));
+        MaxDataRows - KRows(tree.Nodes.Count(n => n.Op.IsCsg())) - tree.Nodes.Sum(n => n.Hidden ? 0 : WarpRows(n.Op));
 
     /// 0xRRGGBB as a float: exact, since float32 holds every integer below 2^24. Unpacked by unpackColor() in the shader.
     static double PackColor(Color c) => (c.R << 16) | (c.G << 8) | c.B;
@@ -88,8 +89,8 @@ public static class FrepShaderGen
 
     /// <paramref name="ids"/> parallel to <paramref name="prims"/>; prims must fit <see cref="PrimRowBudget"/>.
     /// <paramref name="liveWarps"/>: warp node ids whose reference geometry resolved. Returns Program = null if the root is empty;
-    /// Ks (k slot order) and Warps (warp row order) for <see cref="SceneUniforms"/>.
-    public static (ShaderSource? Program, List<double> Ks, List<int> Warps) Compile(
+    /// Ks (k slot order), Warps (warp row order) and Displaces (displace row order, after the warps) for <see cref="SceneUniforms"/>.
+    public static (ShaderSource? Program, List<double> Ks, List<int> Warps, List<int> Displaces) Compile(
         IReadOnlyList<SdPrimitive> prims, IReadOnlyList<Guid> ids, FrepTree tree, IReadOnlySet<int> liveWarps)
     {
         var index = new Dictionary<Guid, int>();
@@ -115,11 +116,21 @@ public static class FrepShaderGen
                 row += WarpRows(n.Op);
                 warps.Add(n.Id);
             }
+        // Displace nodes always have rows (no ref needed: the knurl axis falls back to vertical).
+        var displaceRow = new Dictionary<int, int>();
+        var displaces = new List<int>();
+        foreach (var n in tree.Nodes)
+            if (n.Op == FrepOp.Displace && !n.Hidden)
+            {
+                displaceRow[n.Id] = row;
+                row += WarpRows(n.Op);
+                displaces.Add(n.Id);
+            }
         int kBase = row;
         var kSlot = new Dictionary<int, int>();
         var ks = new List<double>();
         foreach (var n in tree.Nodes)
-            if (!n.Op.IsWarp())
+            if (n.Op.IsCsg())
             {
                 kSlot[n.Id] = ks.Count;
                 ks.Add(n.K);
@@ -156,6 +167,17 @@ public static class FrepShaderGen
         {
             if (tree.Find(id) is not { Hidden: false } n) return null;
             var v = $"n{id}{Suffix(c)}";
+            if (n.Op == FrepOp.Displace)
+            {
+                if (n.Operands.Length == 0 || Eval(n.Operands[0], c) is not { } child) return null;
+                // Mask value (same point context); none, hidden or deleted = textured everywhere.
+                var mask = n.Operands.Length > 1 ? Eval(n.Operands[1], c) : null;
+                int r = displaceRow[id];
+                string p = Point(c);
+                map.Append($"    float {v} = opDisplace({p}, {child}, {mask ?? "-1.0"}, {r});\n");
+                color.Append($"    vec4 {v} = vec4({child}.rgb, opDisplace({p}, {child}.w, {(mask == null ? "-1.0" : mask + ".w")}, {r}));\n");
+                return v;
+            }
             if (n.Op.IsWarp())
             {
                 if (n.Operands.Length == 0) return null;
@@ -213,7 +235,7 @@ public static class FrepShaderGen
             if (!referenced.Contains(FrepOperand.Object(ids[i])) && Eval(FrepOperand.Object(ids[i]), 0) is { } v) roots.Add(v);
         foreach (var n in tree.Nodes)
             if (!referenced.Contains(FrepOperand.Node(n.Id)) && Eval(FrepOperand.Node(n.Id), 0) is { } v) roots.Add(v);
-        if (roots.Count == 0) return (null, ks, warps);
+        if (roots.Count == 0) return (null, ks, warps, displaces);
 
         map.Append($"    float d = {roots[0]};\n");
         color.Append($"    vec4 c = {roots[0]};\n");
@@ -227,8 +249,11 @@ public static class FrepShaderGen
         var key = dataRows + "\n" + map + "\n" + color;
         if (!cache.TryGetValue(key, out var src))
             cache[key] = src = new ShaderSource(Vertex, Fragment(dataRows, map.ToString(), color.ToString()));
-        return (src, ks, warps);
+        return (src, ks, warps, displaces);
     }
+
+    /// A float literal for GLSL: invariant culture (never "0,05"), always with a decimal point.
+    static string Glsl(double v) => v.ToString("0.0##############", System.Globalization.CultureInfo.InvariantCulture);
 
     static string Fragment(int dataRows, string map, string color) => $$"""
         #version 450
@@ -404,6 +429,84 @@ public static class FrepShaderGen
             vec3 i = clamp(round(toLocal(p, o, x, y) / max(s, vec3(1e-9))), lo.xyz, hi.xyz) * s;
             return p - x.xyz * i.x - y.xyz * i.y - cross(x.xyz, y.xyz) * i.z;
         }
+
+        // Displacement textures (Displace node). Each pattern is a height h in [0, 1] with a known gradient bound; constants and
+        // the row layout are documented in Meshing/FrepNoise.cs, whose C# port must stay in sync with this.
+        // PCG3D hash (Jarzynski & Olano 2020): integer-only, so CPU and GPU agree.
+        uvec3 pcg3d(uvec3 v)
+        {
+            v = v * 1664525u + 1013904223u;
+            v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+            v ^= v >> 16u;
+            v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+            return v;
+        }
+        uvec3 hashCell(vec3 c) { return pcg3d(uvec3(ivec3(c))); }
+        const vec3 GRAD[12] = vec3[](vec3(1, 1, 0), vec3(-1, 1, 0), vec3(1, -1, 0), vec3(-1, -1, 0),
+                                     vec3(1, 0, 1), vec3(-1, 0, 1), vec3(1, 0, -1), vec3(-1, 0, -1),
+                                     vec3(0, 1, 1), vec3(0, -1, 1), vec3(0, 1, -1), vec3(0, -1, -1));
+        float gcorner(vec3 i, vec3 f, vec3 o) { return dot(GRAD[hashCell(i + o).x % 12u], f - o); }
+        // Gradient noise, quintic fade.
+        float gnoise(vec3 x)
+        {
+            vec3 i = floor(x), f = x - i;
+            vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+            return mix(mix(mix(gcorner(i, f, vec3(0, 0, 0)), gcorner(i, f, vec3(1, 0, 0)), u.x),
+                           mix(gcorner(i, f, vec3(0, 1, 0)), gcorner(i, f, vec3(1, 1, 0)), u.x), u.y),
+                       mix(mix(gcorner(i, f, vec3(0, 0, 1)), gcorner(i, f, vec3(1, 0, 1)), u.x),
+                           mix(gcorner(i, f, vec3(0, 1, 1)), gcorner(i, f, vec3(1, 1, 1)), u.x), u.y), u.z);
+        }
+        float fbm(vec3 x)
+        {
+            return (gnoise(x) + 0.5 * gnoise(x * 2.0 + vec3(17.13, 5.71, 11.37)) + 0.25 * gnoise(x * 4.0 + vec3(3.93, 23.17, 7.51))) / 1.75;
+        }
+        // F2 - F1 over the 3x3x3 neighbourhood (cell units); feature points kept away from cell faces.
+        float voronoiEdge(vec3 x)
+        {
+            vec3 i = floor(x), f = x - i;
+            float f1 = 8.0, f2 = 8.0;
+            for (int k = -1; k <= 1; k++)
+                for (int j = -1; j <= 1; j++)
+                    for (int l = -1; l <= 1; l++)
+                    {
+                        vec3 o = vec3(l, j, k);
+                        vec3 h = vec3(hashCell(i + o) >> 8u) * (1.0 / 16777216.0);
+                        float d = length(o + {{Glsl(FrepNoise.Jitter0)}} + {{Glsl(1 - 2 * FrepNoise.Jitter0)}} * h - f);
+                        if (d < f1) { f2 = f1; f1 = d; }
+                        else if (d < f2) f2 = d;
+                    }
+            return f2 - f1;
+        }
+        float tri(float x) { return 2.0 * abs(fract(x) - 0.5); } // 1 at integers, 0 at half-integers
+        // Diamond knurl around the axis (a, unit d): pyramids between two helical tooth families theta*K +- z/s. K = whole teeth
+        // per radian, so theta wrapping at +-pi leaves no seam. Faded in over [rho0, rho0 + 1/invRamp] (0 inside), which keeps
+        // the angle's gradient K/rho bounded.
+        float knurl(vec3 p, vec3 a, vec3 d, float invScale, float K, float rho0, float invRamp)
+        {
+            vec3 v = p - a;
+            float z = dot(v, d);
+            vec3 r = v - d * z;
+            float rho = length(r);
+            if (rho <= rho0) return 0.0;
+            vec3 rv = abs(d.z) > 0.99 ? vec3(1, 0, 0) : vec3(0, 0, 1);
+            vec3 e1 = normalize(rv - d * dot(rv, d));
+            float th = atan(dot(r, cross(d, e1)), dot(r, e1));
+            return min(tri(th * K + z * invScale), tri(th * K - z * invScale)) * min((rho - rho0) * invRamp, 1.0);
+        }
+        // Displace: (d - a * w * h) / L. d = child, m = mask (w = 1 inside it, 0 beyond fade; m = -1 when there's no mask).
+        // Rows at b: (pattern, a, 1/scale, 1/L), (1/fade, K, rho0, 1/ramp), (knurl axis start), (knurl axis dir).
+        float opDisplace(vec3 p, float d, float m, int b)
+        {
+            vec4 r0 = u.data[b], r1 = u.data[b + 1];
+            if (r0.y == 0.0) return d;
+            float w = clamp(1.0 - max(m, 0.0) * r1.x, 0.0, 1.0);
+            if (w <= 0.0) return d * r0.w;
+            float h;
+            if (r0.x > 1.5) h = knurl(p, u.data[b + 2].xyz, u.data[b + 3].xyz, r0.z, r1.y, r1.z, r1.w);
+            else if (r0.x > 0.5) h = min(voronoiEdge(p * r0.z) / {{Glsl(FrepNoise.VoronoiGroove)}}, 1.0);
+            else h = clamp(0.5 + {{Glsl(FrepNoise.PerlinGain)}} * fbm(p * r0.z), 0.0, 1.0);
+            return (d - r0.y * w * h) * r0.w;
+        }
         float map(vec3 p)
         {
         {{map}}    return d;
@@ -499,7 +602,7 @@ public static class FrepShaderGen
         u.Vec4(Display.FrepSettings.Zebra ? Math.Max(1, Display.FrepSettings.ZebraStripes) : 0,
             Display.FrepSettings.ZebraVertical ? 1 : 0,
             PackColor(Display.FrepSettings.ZebraColor1), PackColor(Display.FrepSettings.ZebraColor2));
-        // Same order as Compile(): prim rows, colors, warp rows, then k's.
+        // Same order as Compile(): prim rows, colors, warp rows, displace rows, then k's.
         foreach (var prim in scene.Primitives)
         {
             var (kind, f, v) = prim;
@@ -521,6 +624,8 @@ public static class FrepShaderGen
         for (int i = 0; i < scene.Primitives.Count; i += 4)
             u.Vec4(C(i), C(i + 1), C(i + 2), C(i + 3));
         foreach (var w in scene.Warps) WarpUniforms(u, w);
+        foreach (var d in scene.Displaces)
+            foreach (var row in FrepDisplaceMath.Rows(d)) u.Vec4(row.X, row.Y, row.Z, row.W);
         var ks = scene.Ks;
         for (int i = 0; i < ks.Count; i += 4)
             u.Vec4(ks[i], i + 1 < ks.Count ? ks[i + 1] : 0, i + 2 < ks.Count ? ks[i + 2] : 0, i + 3 < ks.Count ? ks[i + 3] : 0);
@@ -591,6 +696,12 @@ public static class FrepShaderGen
             else if (tree.Find(o.NodeId) is { Hidden: false } n)
             {
                 if (n.Op == FrepOp.Difference) { if (n.Operands.Length > 0) b = Of(n.Operands[0]); }
+                else if (n.Op == FrepOp.Displace)
+                {
+                    // The texture raises the child's surface by up to the amplitude; the mask isn't drawn.
+                    if (n.Operands.Length > 0) b = Of(n.Operands[0]);
+                    if (b.IsValid) b.Inflate(Math.Max(n.Param(1), 0));
+                }
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && warp.TryGetValue(n.Id, out var w)) b = Warped(b, w);
             }

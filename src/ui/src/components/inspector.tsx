@@ -8,7 +8,7 @@ import { ParamSlider } from '@/components/param-slider'
 import { ColorField } from '@/components/color-field'
 import { send, useHost } from '@/bridge/host'
 import type { AllowedCommand, DeformKind, OperationKind, SceneNode } from '@/bridge/protocol'
-import { DEFORMS, OPERATIONS, PRIMITIVES, displayParams, isDeform, typeLabel } from '@/lib/scene'
+import { DEFORMS, DISPLACE_PATTERNS, OPERATIONS, PRIMITIVES, displayParams, isDeform, typeLabel } from '@/lib/scene'
 
 /** Bottom half of the panel; what it shows depends on the selection (pick order). */
 export function Inspector(props: { selected: SceneNode[]; labels: Map<string, string>; roots: Set<string> }) {
@@ -320,9 +320,14 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
 function DeformSection(props: { node: SceneNode; labels: Map<string, string>; roots: Set<string> }) {
   const { node, labels, roots } = props
   const units = useHost((s) => s.settings.units)
-  const params = displayParams(node)
-  const isAngle = node.op !== 'repeat'
-  const [max] = useState(() => (isAngle ? 360 : Math.max(1, ...params.map((p) => p.value * 3))))
+  const info = isDeform(node.op) ? DEFORMS[node.op] : undefined
+  const isAngle = !!info?.angle
+  const isTexture = node.op === 'displace'
+  const mask = isTexture ? node.children?.[1] : undefined
+  // Texture: the pattern is a toggle, not a slider; fade only matters with a mask.
+  const params = displayParams(node).filter((p) => !isTexture || (p.key !== 'pattern' && (p.key !== 'fade' || mask)))
+  const [max] = useState(() => (isAngle ? 360 : Math.max(1, ...params.map((p) => Math.abs(p.value) * 3))))
+  const pattern = Math.round(node.params?.pattern ?? 0)
 
   // Throttled previews while dragging; release sends the final value (= one undo step).
   const live = useRef({ timer: 0, name: '', value: 0, previewed: false })
@@ -353,17 +358,39 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string>; ro
   const child = node.children?.[0]
   return (
     <Section title={labels.get(node.id) ?? ''} badge={typeLabel(node)} icon={<NodeIcon node={node} className="size-6" />}>
-      {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
+      {child && <Operand node={child} label={labels.get(child.id)} role={isTexture ? 'Target' : 'Child'} />}
+      {mask && <Operand node={mask} label={labels.get(mask.id)} role="Mask (not drawn)" />}
       {node.refMissing && (
-        <p className="type-small text-muted-foreground">{node.op === 'repeat' ? 'Box' : 'Axis line'} deleted; drawn unwarped.</p>
+        <p className="type-small text-muted-foreground">
+          {info?.ref ?? 'Reference'} deleted; {isTexture ? 'knurl uses a vertical axis' : 'drawn unwarped'}.
+        </p>
+      )}
+      {isTexture && (
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          spacing={0}
+          value={String(pattern)}
+          onValueChange={(v) => v && Number(v) !== pattern && commit('pattern', Number(v))}
+          className="w-full"
+          aria-label="Pattern"
+        >
+          {DISPLACE_PATTERNS.map((p) => (
+            <ToggleGroupItem key={p.value} value={String(p.value)} className="flex-1 px-1" title={p.hint}>
+              {p.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
       )}
       {params.map((p) => (
         <ParamSlider
           key={p.key}
-          label={p.label}
+          label={isTexture && p.key === 'scale' && pattern === 2 ? 'Pitch' : p.label}
           units={isAngle ? '°' : units}
           value={p.value}
-          min={isAngle ? -max : 0}
+          // Texture height may be negative (engraves).
+          min={isAngle || (isTexture && p.key === 'amplitude') ? -max : 0}
           max={max}
           step={isAngle ? 1 : 0.01}
           onChange={(v) => preview(p.key, v)}
@@ -379,7 +406,7 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string>; ro
   )
 }
 
-/** Runs FTwist / FBend / FRepeat on the selection (they then ask for the line / box). */
+/** Runs FTwist / FBend / FRepeat / FDisplace on the selection (warps then ask for the line / box). */
 function DeformButtons() {
   return (
     <Section title="Deform">

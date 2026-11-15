@@ -176,6 +176,8 @@ public class FrepMeshCommand : Command
 
         var warps = new Dictionary<int, SdWarp>();
         for (int i = 0; i < scene.Warps.Count; i++) warps[scene.WarpIds[i]] = scene.Warps[i];
+        var displaces = new Dictionary<int, SdDisplace>();
+        for (int i = 0; i < scene.Displaces.Count; i++) displaces[scene.DisplaceIds[i]] = scene.Displaces[i];
 
         var nodeRef = new Dictionary<int, FieldRef?>();
         FieldRef? Ref(FrepOperand o) => o.IsNode
@@ -185,6 +187,14 @@ public class FrepMeshCommand : Command
         {
             nodeRef[n.Id] = null;
             if (n.Hidden) continue;
+            if (n.Op == FrepOp.Displace)
+            {
+                // Missing child = empty; missing mask = textured everywhere (as in the shader).
+                if (n.Operands.Length == 0 || Ref(n.Operands[0]) is not { } inner || !displaces.TryGetValue(n.Id, out var dsp)) continue;
+                var mask = n.Operands.Length > 1 ? Ref(n.Operands[1]) : null;
+                nodeRef[n.Id] = FieldRef.Node(field.AddDisplace(FrepDisplaceMath.Rows(dsp), inner, mask));
+                continue;
+            }
             if (n.Op.IsWarp())
             {
                 if (n.Operands.Length == 0 || Ref(n.Operands[0]) is not { } child) continue;

@@ -8,23 +8,39 @@ namespace Freppuccino.Csg;
 
 /// Union/Intersect/Difference: CSG over ≥ 2 operands, blend K. Twist/Bend/Repeat: domain warps of one operand,
 /// shaped by a referenced Rhino object (<see cref="FrepNode.Ref"/>: line for Twist/Bend, box for Repeat) + <see cref="FrepNode.Params"/>.
-public enum FrepOp { Union = 0, Intersect = 1, Difference = 2, Twist = 3, Bend = 4, Repeat = 5 }
+/// Displace: a surface texture on one operand (Operands = [child] or [child, mask]); Ref = optional knurl axis line.
+public enum FrepOp { Union = 0, Intersect = 1, Difference = 2, Twist = 3, Bend = 4, Repeat = 5, Displace = 6 }
+
+/// Displace patterns (FrepNode.Params[0] of a Displace node).
+///   Perlin:  3-octave gradient noise; organic skins, stone, hammered metal. Scale = feature size.
+///   Voronoi: raised cells with grooves between them; scales, pebbles, leather, cracked glaze. Scale = cell size.
+///   Knurl:   diamond pyramids wrapped around an axis; grips. Scale = pitch.
+public enum DisplacePattern { Perlin = 0, Voronoi = 1, Knurl = 2 }
 
 public static class FrepOps
 {
-    public static bool IsWarp(this FrepOp op) => op >= FrepOp.Twist;
+    public static bool IsCsg(this FrepOp op) => op <= FrepOp.Difference;
+    public static bool IsWarp(this FrepOp op) => op is FrepOp.Twist or FrepOp.Bend or FrepOp.Repeat;
+    /// Nodes with params (and maybe a Ref): everything but CSG.
+    public static bool HasParams(this FrepOp op) => !op.IsCsg();
 
-    /// Param names per warp op (index = slot in FrepNode.Params). Angles in degrees.
+    /// Param names per op (index = slot in FrepNode.Params). Angles in degrees.
     ///   Twist  angle: total twist from line start to end (linear, continues past the ends)
     ///   Bend   angle: total bend over the line's length (straight past the ends); direction: bend direction around the line
     ///   Repeat x/y/z: spacing along the box axes (≤ 0 = no repetition on that axis)
+    ///   Displace pattern: <see cref="DisplacePattern"/>; amplitude: texture height (model units; &lt; 0 engraves);
+    ///            scale: feature size / pitch; fade: with a mask, distance outside it over which the texture fades out
     public static IReadOnlyList<string> ParamNames(this FrepOp op) => op switch
     {
         FrepOp.Twist => ["angle"],
         FrepOp.Bend => ["angle", "direction"],
         FrepOp.Repeat => ["x", "y", "z"],
+        FrepOp.Displace => ["pattern", "amplitude", "scale", "fade"],
         _ => [],
     };
+
+    public static DisplacePattern Pattern(this FrepNode n) =>
+        (int)Math.Round(n.Param(0)) switch { 1 => DisplacePattern.Voronoi, 2 => DisplacePattern.Knurl, _ => DisplacePattern.Perlin };
 }
 
 /// Leaf (Rhino object id of an SDF primitive) or a reference to another node.
@@ -38,11 +54,17 @@ public readonly record struct FrepOperand(int NodeId, Guid ObjectId)
 /// Difference: Operands[0] − Operands[1..]. K = smooth blend distance (model units, 0 = hard).
 /// Hidden: dropped like a hidden primitive (a missing leaf for its parents; not drawn as a root).
 /// Warps: Operands = [child], Ref = line/box object, Params per <see cref="FrepOps.ParamNames"/>; K unused.
+/// Displace: Operands = [child] or [child, mask] (the mask is not drawn; it only says where the texture goes); Ref = knurl
+/// axis line or Guid.Empty (vertical through the child's center).
 public sealed record FrepNode(int Id, FrepOp Op, double K, ImmutableArray<FrepOperand> Operands, bool Hidden = false,
     Guid Ref = default, ImmutableArray<double> Params = default)
 {
     public string Name => FrepTree.NodeName(Id);
     public double Param(int i) => !Params.IsDefault && i < Params.Length ? Params[i] : 0;
+    /// Number of stored params; 0 when none were set (Params is then a default ImmutableArray, whose Length throws).
+    public int ParamCount => Params.IsDefault ? 0 : Params.Length;
+    /// Displace mask operand, if any.
+    public FrepOperand? Mask => Op == FrepOp.Displace && Operands.Length > 1 ? Operands[1] : null;
 }
 
 /// Immutable CSG DAG. Nodes in creation order, which is topological: operands always predate their node, and
@@ -78,6 +100,13 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         return (new FrepTree(Nodes.Add(node), NextId + 1), node);
     }
 
+    /// Displace over <paramref name="child"/>, textured only near <paramref name="mask"/> if given.
+    public (FrepTree Tree, FrepNode Node) AddDisplace(FrepOperand child, FrepOperand? mask, Guid axis, IEnumerable<double> parameters)
+    {
+        var node = new FrepNode(NextId, FrepOp.Displace, 0, mask is { } m ? [child, m] : [child], Ref: axis, Params: [.. parameters]);
+        return (new FrepTree(Nodes.Add(node), NextId + 1), node);
+    }
+
     public FrepTree WithParam(int id, int index, double value) => Edit(id, n =>
     {
         var p = (n.Params.IsDefault ? [] : n.Params).ToBuilder();
@@ -101,7 +130,8 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
     /// Caller ensures nothing references it.
     public FrepTree Remove(int id) => this with { Nodes = Nodes.RemoveAll(n => n.Id == id) };
 
-    const int Major = 1, Minor = 2; // 1.1: per-node Hidden; 1.2: Ref + Params
+    // 1.1: per-node Hidden; 1.2: Ref + Params; 1.3: Displace op (same layout as 1.2)
+    const int Major = 1, Minor = 3;
 
     public void Write(BinaryArchiveWriter w)
     {

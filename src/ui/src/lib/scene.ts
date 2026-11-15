@@ -1,5 +1,5 @@
 import type { BrandIconName } from '@/components/brand-icon'
-import type { AllowedCommand, DeformKind, OperationKind, SceneNode } from '@/bridge/protocol'
+import type { AllowedCommand, DeformKind, DisplacePattern, OperationKind, SceneNode } from '@/bridge/protocol'
 
 interface PrimitiveInfo {
   label: string
@@ -30,12 +30,37 @@ export const OPERATIONS: Record<OperationKind, { label: string; icon: BrandIconN
   intersect: { label: 'Intersect', icon: 'intersect' },
 }
 
-/** Commands take the selected object / node, then ask for the line / box. Angles in degrees. */
-export const DEFORMS: Record<DeformKind, { label: string; icon: BrandIconName; command: AllowedCommand; params: Record<string, string> }> = {
-  twist: { label: 'Twist', icon: 'twist', command: 'FTwist', params: { angle: 'Angle' } },
-  bend: { label: 'Bend', icon: 'bend', command: 'FBend', params: { angle: 'Angle', direction: 'Direction' } },
-  repeat: { label: 'Repeat', icon: 'repeat', command: 'FRepeat', params: { x: 'Spacing X', y: 'Spacing Y', z: 'Spacing Z' } },
+interface DeformInfo {
+  label: string
+  icon: BrandIconName
+  command: AllowedCommand
+  params: Record<string, string>
+  /** params are angles in degrees (else lengths in model units) */
+  angle?: boolean
+  /** the Rhino object that drives it, for the "deleted" note */
+  ref?: string
 }
+
+/** Commands take the selected object / node, then ask for the line / box (FDisplace: options, optional mask / axis). */
+export const DEFORMS: Record<DeformKind, DeformInfo> = {
+  twist: { label: 'Twist', icon: 'twist', command: 'FTwist', params: { angle: 'Angle' }, angle: true, ref: 'Axis line' },
+  bend: { label: 'Bend', icon: 'bend', command: 'FBend', params: { angle: 'Angle', direction: 'Direction' }, angle: true, ref: 'Axis line' },
+  repeat: { label: 'Repeat', icon: 'repeat', command: 'FRepeat', params: { x: 'Spacing X', y: 'Spacing Y', z: 'Spacing Z' }, ref: 'Box' },
+  displace: {
+    label: 'Texture',
+    icon: 'displace',
+    command: 'FDisplace',
+    params: { pattern: 'Pattern', amplitude: 'Height', scale: 'Scale', fade: 'Mask fade' },
+    ref: 'Knurl axis',
+  },
+}
+
+/** Displace patterns (params.pattern). Scale is the feature size (knurl: pitch); a negative height engraves. */
+export const DISPLACE_PATTERNS: { value: DisplacePattern; label: string; hint: string }[] = [
+  { value: 0, label: 'Perlin', hint: 'organic noise: skins, stone, hammered metal' },
+  { value: 1, label: 'Voronoi', hint: 'raised cells: scales, pebbles, leather' },
+  { value: 2, label: 'Knurl', hint: 'diamond grip around an axis' },
+]
 
 export function isDeform(op: SceneNode['op']): op is DeformKind {
   return !!op && op in DEFORMS

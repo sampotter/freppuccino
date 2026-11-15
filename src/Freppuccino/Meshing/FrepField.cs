@@ -22,8 +22,9 @@ public readonly record struct V4(double X, double Y, double Z, double W)
 /// Same kinds and parameter packing as Scene.SdKind / SdPrimitive.P.
 public enum FieldKind { Sphere, Box, Torus, Cylinder, Cone, Ellipsoid, Pyramid }
 
-/// Twist/Bend/Repeat: domain warps of one operand (see <see cref="FrepField.AddWarp"/>).
-public enum FieldOp { Union, Intersect, Difference, Twist, Bend, Repeat }
+/// Twist/Bend/Repeat: domain warps of one operand (see <see cref="FrepField.AddWarp"/>). Displace: a surface texture on one
+/// operand, optionally confined by a mask operand (<see cref="FrepField.AddDisplace"/>).
+public enum FieldOp { Union, Intersect, Difference, Twist, Bend, Repeat, Displace }
 
 /// A primitive (by index) or an earlier node (by index).
 public readonly record struct FieldRef(bool IsNode, int Index)
@@ -47,7 +48,7 @@ public sealed class FrepField
 {
     // X, Y, Z are the canonical-to-world columns (bounds). Ix, Iy, Iz are the rows of the inverse (the dots in PrimValue).
     readonly record struct Prim(FieldKind Kind, V3 O, V3 X, V3 Y, V3 Z, V3 P, double Lip, V3 Ix, V3 Iy, V3 Iz);
-    // Rows: warp params (null for CSG).
+    // Rows: warp / displace params (null for CSG).
     readonly record struct Node(FieldOp Op, double K, FieldRef[] Operands, V4[]? Rows = null);
 
     readonly List<Prim> prims = [];
@@ -114,6 +115,15 @@ public sealed class FrepField
         return nodes.Count - 1;
     }
 
+    /// Texture on <paramref name="child"/> (see <see cref="FrepNoise"/>); rows as packed by Csg.FrepDisplaceMath.Rows (4).
+    /// <paramref name="mask"/>: only textured inside it (fading over the rows' fade distance). Not drawn itself.
+    public int AddDisplace(V4[] rows, FieldRef child, FieldRef? mask = null)
+    {
+        if (rows.Length != 4) throw new ArgumentException("Displace needs 4 rows", nameof(rows));
+        nodes.Add(new Node(FieldOp.Displace, 0, mask is { } m ? [child, m] : [child], rows));
+        return nodes.Count - 1;
+    }
+
     public void AddRoot(FieldRef root) => roots.Add(root);
 
     public bool HasRoots => roots.Count > 0;
@@ -156,7 +166,8 @@ public sealed class FrepField
         {
             var n = nodes[i];
             double d = v[Slot(n.Operands[0])];
-            for (int o = 1; o < n.Operands.Length; o++) d = Combine(n, d, v[Slot(n.Operands[o])]);
+            if (n.Op == FieldOp.Displace) d = FrepNoise.Displace(n.Rows!, p, d, n.Operands.Length > 1 ? v[Slot(n.Operands[1])] : -1);
+            else for (int o = 1; o < n.Operands.Length; o++) d = Combine(n, d, v[Slot(n.Operands[o])]);
             v[np + i] = d;
         }
         double result = double.PositiveInfinity;
@@ -191,7 +202,13 @@ public sealed class FrepField
         else
         {
             var n = nodes[r.Index];
-            if (n.Rows is { } w)
+            if (n.Op == FieldOp.Displace)
+            {
+                d = Eval(n.Operands[0], p, ctx, ref memo, ref top, stride);
+                double m = n.Operands.Length > 1 ? Eval(n.Operands[1], p, ctx, ref memo, ref top, stride) : -1;
+                d = FrepNoise.Displace(n.Rows!, p, d, m);
+            }
+            else if (n.Rows is { } w)
             {
                 var q = Warp(n.Op, w, p, out double lip);
                 int saved = top;
@@ -386,7 +403,9 @@ public sealed class FrepField
     ///   intersect:  smax >= max, so it lies in the overlap of the operands' {<= t};
     ///   difference: it lies in the base's {<= t};
     ///   warp:       child(q) / lip <= t needs child(q) <= t · max lip; the child's box is then mapped forward
-    ///               (see <see cref="WarpBox"/>).
+    ///               (see <see cref="WarpBox"/>);
+    ///   displace:   (d − a·w·h) / L <= t needs d <= t · L + max(a, 0) (w·h ∈ [0, 1]); the mask isn't drawn, so it
+    ///               isn't asked for.
     /// The offset is in field value, not distance: a primitive whose field underestimates distance
     /// (the ellipsoid) grows by more than t, which <see cref="PrimBounds"/> accounts for.
     public (V3 Min, V3 Max) Bounds()
@@ -413,6 +432,7 @@ public sealed class FrepField
             if (t == none) continue;
             var n = nodes[i];
             if (n.Op == FieldOp.Difference) { Ask(n.Operands[0], t); continue; }
+            if (n.Op == FieldOp.Displace) { Ask(n.Operands[0], t / n.Rows![0].W + Math.Max(n.Rows[0].Y, 0)); continue; }
             if (n.Rows is { } w) { Ask(n.Operands[0], t * MaxLip(n.Op, w)); continue; }
             double d = n.Op == FieldOp.Union && n.Operands.Length > 1 ? Math.Max(n.K, 0) * (n.Operands.Length > 2 ? 1.0 : 0.25) : 0;
             foreach (var o in n.Operands) Ask(o, t + d);
@@ -426,7 +446,8 @@ public sealed class FrepField
             if (nodeLevel[i] == none) continue;
             var n = nodes[i];
             var box = Box(n.Operands[0]);
-            if (n.Rows is { } w)
+            if (n.Op == FieldOp.Displace) { }
+            else if (n.Rows is { } w)
             {
                 if (!IsEmpty(box)) box = WarpBox(n.Op, w, box);
             }
