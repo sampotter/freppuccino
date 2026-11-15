@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using Freppuccino.Csg;
 using Freppuccino.Meshing;
 using Freppuccino.Scene;
-using Freppuccino.Sdf;
 using Rhino;
 using Rhino.Commands;
 using Rhino.Geometry;
@@ -39,10 +38,24 @@ public class FrepMeshCommand : Command
             RhinoApp.WriteLine("FrepMesh: no F-rep objects in the document (create some with FSphere, FBox, FPipe, ...).");
             return Result.Nothing;
         }
-        var field = BuildField(scene, scene.Tree);
+        // Only the selected blends (roots), snapshotted now, before the new mesh becomes the selection. Nothing selected,
+        // or only shapes inside blends: pick blends. Never the whole scene.
+        var roots = Selection.FrepSelection.Roots(doc);
+        if (roots.Count == 0)
+        {
+            var picked = PickRoots(doc);
+            if (picked == null) return Result.Cancel;
+            roots = picked;
+        }
+        if (roots.Count == 0)
+        {
+            RhinoApp.WriteLine("FrepMesh: no blend selected; nothing baked.");
+            return Result.Nothing;
+        }
+        var field = FrepFieldBuilder.Build(scene, roots, out var built);
         if (!field.HasRoots)
         {
-            RhinoApp.WriteLine("FrepMesh: nothing to mesh (every F-rep is hidden or cancelled out by the CSG tree).");
+            RhinoApp.WriteLine("FrepMesh: nothing to mesh (the selected blends are hidden or cancelled out by the CSG tree).");
             return Result.Nothing;
         }
 
@@ -115,9 +128,33 @@ public class FrepMeshCommand : Command
         doc.Objects.Select(id);
         doc.Views.Redraw();
         RhinoApp.WriteLine(
-            $"FrepMesh: {scene.Count} F-rep(s) -> {faces}, cell size {result.CellSize:0.####} {doc.ModelUnitSystem}, " +
+            $"FrepMesh: {built.Count} blend(s) -> {faces}, cell size {result.CellSize:0.####} {doc.ModelUnitSystem}, " +
             $"{quality}, {watch.ElapsedMilliseconds} ms.");
         return Result.Success;
+    }
+
+    /// Click blends (an F-rep selection session: the picker acts during this prompt, adding each clicked root); Enter ends.
+    /// Null if cancelled.
+    static List<Csg.FrepOperand>? PickRoots(RhinoDoc doc)
+    {
+        doc.Objects.UnselectAll(); // leaves only: start the blend selection from scratch
+        doc.Views.Redraw();
+        using var session = Selection.FrepPicker.BeginSession();
+        var gp = new Rhino.Input.Custom.GetPoint();
+        gp.SetCommandPrompt("Click the blends to bake, Enter when done");
+        gp.AcceptNothing(true);
+        while (true)
+        {
+            switch (gp.Get())
+            {
+                case GetResult.Point: // a click on no blend: ignore
+                    continue;
+                case GetResult.Nothing:
+                    return Selection.FrepSelection.Roots(doc);
+                default:
+                    return null;
+            }
+        }
     }
 
     /// <see cref="DualContour.Defects"/> for a Rhino mesh: faces are read through the mesh's topology, so
@@ -136,100 +173,6 @@ public class FrepMeshCommand : Command
             triangles.Add(a); triangles.Add(c); triangles.Add(topology.TopologyVertexIndex(face.D));
         }
         return DualContour.Defects(new DualContour.Result(vertices, triangles, 0, 0, 0, 0));
-    }
-
-    /// The scene as a CPU field, following FrepShaderGen.Compile: nodes in creation order, missing
-    /// leaves (hidden or deleted primitives, hidden nodes) dropped the same way, parentless primitives
-    /// and nodes as roots. Warps: hidden = missing, missing child = empty, ref gone = child unwarped.
-    static FrepField BuildField(FrepSceneData scene, FrepTree tree)
-    {
-        var field = new FrepField();
-        var index = new Dictionary<Guid, int>();
-        for (int i = 0; i < scene.Primitives.Count; i++)
-        {
-            var prim = scene.Primitives[i];
-            var (kind, frame, p) = prim;
-            var x = frame.XAxis;
-            var y = frame.YAxis;
-            var z = frame.ZAxis;
-            double lip = 1;
-            if (kind is not (SdKind.Sphere or SdKind.Ellipsoid) && prim.Basis is { } basis)
-            {
-                x = basis.X;
-                y = basis.Y;
-                z = basis.Z;
-                if (SdfTransforms.TryMetrics(basis, out _, out _, out _, out var sigmaMin, out _)) lip = sigmaMin;
-            }
-            var fieldKind = kind switch
-            {
-                SdKind.Sphere => FieldKind.Sphere,
-                SdKind.Box => FieldKind.Box,
-                SdKind.Torus => FieldKind.Torus,
-                SdKind.Cylinder => FieldKind.Cylinder,
-                SdKind.Cone => FieldKind.Cone,
-                SdKind.Ellipsoid => FieldKind.Ellipsoid,
-                SdKind.Pyramid => FieldKind.Pyramid,
-                _ => throw new NotSupportedException($"FrepMesh cannot mesh {kind} yet"),
-            };
-            index[scene.Ids[i]] = field.AddPrimitive(fieldKind, V(frame.Origin), V(x), V(y), V(p), V(z), lip);
-        }
-
-        var warps = new Dictionary<int, SdWarp>();
-        for (int i = 0; i < scene.Warps.Count; i++) warps[scene.WarpIds[i]] = scene.Warps[i];
-        var pipes = new Dictionary<int, SdPipe>();
-        for (int i = 0; i < scene.Pipes.Count; i++) pipes[scene.PipeIds[i]] = scene.Pipes[i];
-
-        var nodeRef = new Dictionary<int, FieldRef?>();
-        FieldRef? Ref(FrepOperand o) => o.IsNode
-            ? nodeRef.GetValueOrDefault(o.NodeId)
-            : index.TryGetValue(o.ObjectId, out var i) ? FieldRef.Primitive(i) : null;
-        foreach (var n in tree.Nodes)
-        {
-            nodeRef[n.Id] = null;
-            if (n.Hidden) continue;
-            if (n.Op == FrepOp.Pipe)
-            {
-                // Curve deleted: nothing (as in the shader).
-                if (pipes.TryGetValue(n.Id, out var pipe)) nodeRef[n.Id] = FieldRef.Node(field.AddPipe(FrepNodeMath.PipeRowsOf(pipe)));
-                continue;
-            }
-            if (n.Op.IsModifier())
-            {
-                if (n.Operands.Length == 0 || Ref(n.Operands[0]) is not { } inner) continue;
-                nodeRef[n.Id] = n.Op == FrepOp.Shell
-                    ? FieldRef.Node(field.AddModifier(FieldOp.Shell, FrepNodeMath.ShellRows(n), inner))
-                    : FieldRef.Node(field.AddModifier(FieldOp.Gyroid, FrepNodeMath.GyroidRows(n), inner));
-                continue;
-            }
-            if (n.Op.IsWarp())
-            {
-                if (n.Operands.Length == 0 || Ref(n.Operands[0]) is not { } child) continue;
-                nodeRef[n.Id] = warps.TryGetValue(n.Id, out var w)
-                    ? FieldRef.Node(field.AddWarp(n.Op switch { FrepOp.Twist => FieldOp.Twist, FrepOp.Bend => FieldOp.Bend, _ => FieldOp.Repeat },
-                        FrepWarpMath.Rows(w), child))
-                    : child;
-                continue;
-            }
-            var terms = n.Operands.Select(Ref).ToList();
-            // Union skips missing operands; intersect with one missing is empty; difference needs its base.
-            bool empty = n.Op switch
-            {
-                FrepOp.Union => false,
-                FrepOp.Intersect => terms.Contains(null),
-                _ => terms.Count == 0 || terms[0] == null,
-            };
-            var live = terms.OfType<FieldRef>().ToList();
-            if (empty || live.Count == 0) continue;
-            var op = n.Op switch { FrepOp.Union => FieldOp.Union, FrepOp.Intersect => FieldOp.Intersect, _ => FieldOp.Difference };
-            nodeRef[n.Id] = FieldRef.Node(field.AddNode(op, n.K, live, FrepNodeMath.BlendCode(n)));
-        }
-
-        var referenced = tree.Nodes.SelectMany(n => n.Operands).ToHashSet();
-        for (int i = 0; i < scene.Primitives.Count; i++)
-            if (!referenced.Contains(FrepOperand.Object(scene.Ids[i]))) field.AddRoot(FieldRef.Primitive(i));
-        foreach (var n in tree.Nodes)
-            if (nodeRef[n.Id] is { } r && !referenced.Contains(FrepOperand.Node(n.Id))) field.AddRoot(r);
-        return field;
     }
 
     static V3 V(Point3d p) => new(p.X, p.Y, p.Z);

@@ -87,6 +87,7 @@ public abstract class FWarpCommand : FrepNodeCommand
         var (tree, node) = FrepTrees.Get(doc).AddWarp(Op, child, go.Object(0).ObjectId, Last);
         FrepTrees.Set(doc, tree, EnglishName);
         doc.Objects.UnselectAll();
+        UiController.SelectNode(doc, node.Id);
         RhinoApp.WriteLine($"{EnglishName}: created {node.Name}.");
         return Result.Success;
     }

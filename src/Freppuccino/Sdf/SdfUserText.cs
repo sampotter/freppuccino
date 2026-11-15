@@ -42,6 +42,14 @@ public static class SdfUserText
     public const string LinearYKey = Prefix + "Linear.Y";
     public const string LinearZKey = Prefix + "Linear.Z";
 
+    /// <summary>FFunction (SDF.Type = sdUser): GLSL-subset source, see UserFn/.</summary>
+    public const string UserType = "sdUser";
+    public const string CodeKey = Prefix + "Code";
+    /// <summary>FFunction Lipschitz scale: field = f / L. Missing = 1.</summary>
+    public const string LipschitzKey = Prefix + "L";
+    /// <summary>FFunction param values: SDF.u.&lt;name&gt;. Missing = the param's declared default.</summary>
+    public const string UserParamPrefix = Prefix + "u.";
+
     /// <summary>Per-object display color "#RRGGBB" the viewport shader uses. Set from the Freppuccino panel.</summary>
     public const string ColorKey = Prefix + "Color";
 
@@ -91,9 +99,11 @@ public static class SdfUserText
     /// <summary>Columns of the canonical-to-world map (world space). Omitted when they are the frame axes.</summary>
     public static void WriteLinear(ObjectAttributes attributes, Vector3d x, Vector3d y, Vector3d z)
     {
-        attributes.SetUserString(LinearXKey, Format(x.X, x.Y, x.Z));
-        attributes.SetUserString(LinearYKey, Format(y.X, y.Y, y.Z));
-        attributes.SetUserString(LinearZKey, Format(z.X, z.Y, z.Z));
+        // Round-trip precision: a small but healthy map (e.g. a sheared shape scaled by 1e-7) must read back the same.
+        static string R(Vector3d v) => string.Join(",", v.X.ToString("R", CultureInfo.InvariantCulture), v.Y.ToString("R", CultureInfo.InvariantCulture), v.Z.ToString("R", CultureInfo.InvariantCulture));
+        attributes.SetUserString(LinearXKey, R(x));
+        attributes.SetUserString(LinearYKey, R(y));
+        attributes.SetUserString(LinearZKey, R(z));
     }
 
     public static void ClearLinear(ObjectAttributes attributes)
@@ -103,17 +113,30 @@ public static class SdfUserText
         attributes.DeleteUserString(LinearZKey);
     }
 
-    public static bool TryReadLinear(ObjectAttributes attributes, out Vector3d x, out Vector3d y, out Vector3d z)
+    public static bool TryReadLinear(ObjectAttributes attributes, out Vector3d x, out Vector3d y, out Vector3d z) =>
+        ReadLinear(attributes, out x, out y, out z) == LinearState.Valid;
+
+    public enum LinearState { Absent, Valid, Invalid }
+
+    /// <summary>
+    /// Absent: no SDF.Linear.* keys (the frame axes). Invalid: keys present but unparsable, non-finite, or not
+    /// <see cref="SdfTransforms.IsUsableBasis"/> (the same test the write path applies): callers treat the primitive as
+    /// degenerate rather than silently unsheared.
+    /// </summary>
+    public static LinearState ReadLinear(ObjectAttributes attributes, out Vector3d x, out Vector3d y, out Vector3d z)
     {
         x = y = z = Vector3d.Unset;
-        if (!TryParse(attributes.GetUserString(LinearXKey), out var xx, out var xy, out var xz) ||
-            !TryParse(attributes.GetUserString(LinearYKey), out var yx, out var yy, out var yz) ||
-            !TryParse(attributes.GetUserString(LinearZKey), out var zx, out var zy, out var zz))
-            return false;
+        string? sx = attributes.GetUserString(LinearXKey), sy = attributes.GetUserString(LinearYKey), sz = attributes.GetUserString(LinearZKey);
+        if (string.IsNullOrEmpty(sx) && string.IsNullOrEmpty(sy) && string.IsNullOrEmpty(sz)) return LinearState.Absent;
+        if (!TryParse(sx, out var xx, out var xy, out var xz) ||
+            !TryParse(sy, out var yx, out var yy, out var yz) ||
+            !TryParse(sz, out var zx, out var zy, out var zz))
+            return LinearState.Invalid;
         x = new Vector3d(xx, xy, xz);
         y = new Vector3d(yx, yy, yz);
         z = new Vector3d(zx, zy, zz);
-        return x.IsValid && y.IsValid && z.IsValid;
+        if (!x.IsValid || !y.IsValid || !z.IsValid || !SdfTransforms.IsUsableBasis(new SdfBasis(x, y, z))) return LinearState.Invalid;
+        return LinearState.Valid;
     }
 
     /// <summary>Writes SDF.Frame.Origin / XAxis / YAxis only (used when a transform moves the primitive).</summary>
@@ -127,6 +150,13 @@ public static class SdfUserText
     /// <summary>Scalar parameter, e.g. WriteFloat(a, "r", radius) -> SDF.r</summary>
     public static void WriteFloat(ObjectAttributes attributes, string name, double value) =>
         attributes.SetUserString(Prefix + name, Format(value));
+
+    /// <summary>Like <see cref="WriteFloat"/> but round-trip exact (no rounding / tiny-value snapping): SDF.L, SDF.u.*.</summary>
+    public static void WriteFloatExact(ObjectAttributes attributes, string name, double value) =>
+        attributes.SetUserString(Prefix + name, FormatExact(value));
+
+    /// <summary>Shortest round-trip text, invariant (e.g. "0.1", "1E-15").</summary>
+    public static string FormatExact(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
     /// <summary>vec2 parameter, e.g. WriteVec2(a, "t", R, r) -> SDF.t.x, SDF.t.y</summary>
     public static void WriteVec2(ObjectAttributes attributes, string name, double x, double y)

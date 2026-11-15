@@ -1,4 +1,4 @@
-import { ChevronRight, Eye, EyeOff, Lock, Trash2 } from 'lucide-react'
+import { ChevronRight, Eye, EyeOff, Lock, Trash2, Ungroup } from 'lucide-react'
 import { useEffect, useState, type MouseEvent } from 'react'
 import { cn } from '@/lib/utils'
 import { NodeIcon } from '@/components/brand-icon'
@@ -28,7 +28,7 @@ export function SceneTree(props: {
       return next
     })
 
-  const [menu, setMenu] = useState<{ x: number; y: number; id: Id } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; id: Id; operation: boolean } | null>(null)
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -57,16 +57,29 @@ export function SceneTree(props: {
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
+          {menu.operation && (
+            <button
+              type="button"
+              role="menuitem"
+              className="type-small flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
+              onClick={() => {
+                send({ type: 'deleteNodes', ids: [menu.id] })
+                setMenu(null)
+              }}
+            >
+              <Ungroup className="size-3.5" /> Unwrap
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"
             className="type-small flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
             onClick={() => {
-              send({ type: 'deleteNodes', ids: [menu.id] })
+              send({ type: 'deleteNodes', ids: [menu.id], deep: menu.operation })
               setMenu(null)
             }}
           >
-            <Trash2 className="size-3.5" /> Delete operation
+            <Trash2 className="size-3.5" /> Delete
           </button>
         </div>
       )}
@@ -83,7 +96,7 @@ function TreeRow(props: {
   onToggle: (id: Id) => void
   onSelect: (ids: Id[], mode: SelectMode) => void
   onSetVisible: (id: Id, visible: boolean) => void
-  onDeleteMenu: (menu: { x: number; y: number; id: Id }) => void
+  onDeleteMenu: (menu: { x: number; y: number; id: Id; operation: boolean }) => void
   /** subtract operands after the first are tools */
   role?: 'tool'
 }) {
@@ -92,7 +105,7 @@ function TreeRow(props: {
   const open = hasChildren && !collapsed.has(node.id)
   const selected = selection.has(node.id)
 
-  const canDelete = depth === 0 && node.kind === 'operation' && !node.missing
+  const canDelete = !node.missing
 
   const onClick = (e: MouseEvent) => {
     const mode: SelectMode = e.ctrlKey || e.metaKey ? 'toggle' : e.shiftKey ? 'add' : 'replace'
@@ -107,7 +120,7 @@ function TreeRow(props: {
           if (!canDelete || (e.target as HTMLElement).closest('input')) return
           e.preventDefault()
           props.onSelect([node.id], 'replace')
-          props.onDeleteMenu({ x: e.clientX, y: e.clientY, id: node.id })
+          props.onDeleteMenu({ x: e.clientX, y: e.clientY, id: node.id, operation: node.kind === 'operation' })
         }}
         className={cn(
           'group mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-sm pr-1 select-none hover:bg-accent/50',
@@ -132,7 +145,7 @@ function TreeRow(props: {
           {props.labels.get(node.id)}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
-          {node.kind === 'operation' && node.op && !isDeform(node.op) && !node.missing && (
+          {node.kind === 'operation' && node.op && !isDeform(node.op) && node.op !== 'offset' && !node.missing && (
             <BlendField id={node.id} op={node.op} k={node.k ?? 0} />
           )}
           {node.locked && <Lock className="size-3.5 text-muted-foreground" />}
@@ -167,7 +180,7 @@ function TreeRow(props: {
 }
 
 /** Typed blend for an operation node. Commits on Enter or blur, same path as the inspector slider. */
-function BlendField(props: { id: Id; op: OperationKind; k: number }) {
+function BlendField(props: { id: Id; op: OperationKind | 'blend'; k: number }) {
   const { id, op, k } = props
   const [text, setText] = useState(() => formatBlend(k))
   const [shown, setShown] = useState(k)

@@ -22,7 +22,8 @@ Any model with image input + tool calling works.
 
 ```
 src/ui/src/ai/
-  agent.ts        loop: prompt → model → tool calls → results (+ screenshots) → model … until it answers without tools
+  agent.ts        loop: prompt (+ reference images) → model → tool calls → results (+ screenshots) → model … until it answers without tools
+  images.ts       reads attached reference images (downscale + JPEG data URL)
   openrouter.ts   fetch client for /chat/completions (no SDK: see the comment there)
   tools.ts        tool schemas for the model + runTool (load_skill local, everything else → Rhino)
   prompt.ts       fixed system prompt (role + loop protocol); modeling know-how lives in skills
@@ -35,14 +36,27 @@ src/Freppuccino/Ai/
   AiWarps.cs      deform tool: twist / bend / repeat nodes + the axis lines / boxes that drive them
   AiModifiers.cs  shell / lattice / pipe tools (+ the pipe's curve), CSG blend style
   AiShapes.cs     LLM-friendly shape specs ⇄ SdPrimitive (cylinder = start/end/radius, box = center/size, …)
-  AiCapture.cs    offscreen screenshots in the hidden "Freppuccino Capture" display mode (proxy Breps invisible)
+  AiCapture.cs    offscreen screenshots in the hidden "Freppuccino Capture" display mode (proxy Breps invisible); while
+                  capturing (AiCapture.Active) the conduit draws just the model: no FREP MODE badge, no control outlines.
+                  AiCapture.CleanCapture() gives other capture code (the sizzle-capture skill's scripts) the same scope
   AiRunLog.cs     saves each run (transcript + PNGs)
 src/Freppuccino/Scene/FrepPrimitives.cs   SdPrimitive → SDF.* user text + proxy Brep, add / replace in the doc
 ```
 
-Tools: `get_scene`, `create_primitive`, `update_primitive`, `transform`, `combine`, `deform`, `shell`, `lattice`, `pipe`, `edit_operation`, `delete`,
-`set_visible`, `clear_scene`, `capture_views`, `load_skill`. Objects are addressed by name (unique names are enforced), GUID, or node
-name (`N3`). Primitives take a `color`.
+Tools: `get_scene`, `create_primitive`, `update_primitive`, `transform`, `combine`, `deform`, `shell`, `lattice`, `pipe`,
+`edit_operation`, `delete`, `set_color`, `set_visible`, `clear_scene`, `capture_views`, `load_skill`. Objects are addressed by name
+(unique names are enforced), GUID, or node name (`N3`).
+
+Colors: the AI writes `SDF.Color`, the same per-primitive shader color as the inspector's color picker (not the Rhino object
+color). `create_primitive` / `update_primitive` take a `color`; `set_color` recolors without changing shape, either
+`refs` + `color` or `colors: [{ref, color}, …]` for many parts in one undo step, and a node ref colors every primitive under it.
+`get_scene` reports each primitive's color. Colors are `"#RRGGBB"` or a CSS / .NET name.
+
+FFunctions (user SDF code in a clip box): `create_function`, `set_function_code`, `get_function`, `set_function_params`
+(`Ai/AiFunctions.cs`); `help` returns the FFunction guide + tool list. The guide is one file,
+`.claude/skills/freppuccino-ffunction/SKILL.md`: a Claude Code skill for external sessions (which call
+`Freppuccino.Ai.AiTools.RunJson(tool, json)` through Rhino MCP `run_csharp`), a panel skill (skills.ts also globs
+`.claude/skills/freppuccino-*/SKILL.md`), and the embedded resource `help` returns.
 
 Deforms: `deform` takes LLM-friendly fields (twist: axis + angle; bend: axis + angle + `toward`; repeat: `count` + `spacing` +
 `centered`) and creates the Rhino line / box that drives the warp, tagged with the user string `Freppuccino.AiRef` and named
@@ -60,6 +74,13 @@ Screenshots: `capture_views` renders the active view's camera from standard angl
 framed on the objects, without moving the user's view. Tool results are text-only in the chat API, so the images follow as a
 user message. Only the newest 2 screenshot sets stay in the context. The system prompt and last message carry
 `cache_control` (prompt caching on Anthropic / Gemini via OpenRouter).
+
+Reference images: the image button next to the prompt box (or paste / drag and drop onto the AI tab) attaches up to 4 photos or
+sketches to a message; the text is optional ("Model the object shown…" is sent when it's empty). `ai/images.ts` downscales
+each to ≤ 1568 px and re-encodes it as JPEG. They go to the model as image parts of the user message, labelled
+`[reference images attached by the user: …]`, and are never pruned like old screenshots, so the model can compare its
+captures with them for the whole chat. The `reference-images` skill tells it how to turn a picture into parts and proportions.
+The chosen model needs image input.
 
 ## Tuning it: skills + run logs
 

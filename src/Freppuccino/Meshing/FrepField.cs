@@ -1,3 +1,5 @@
+using Freppuccino.UserFn;
+
 namespace Freppuccino.Meshing;
 
 /// Minimal double-precision vector for the meshing core, which deliberately has no Rhino dependency
@@ -19,12 +21,15 @@ public readonly record struct V4(double X, double Y, double Z, double W)
     public V3 Xyz => new(X, Y, Z);
 }
 
-/// Same kinds and parameter packing as Scene.SdKind / SdPrimitive.P.
-public enum FieldKind { Sphere, Box, Torus, Cylinder, Cone, Ellipsoid, Pyramid }
+/// Same kinds and parameter packing as Scene.SdKind / SdPrimitive.P. User: P = clip box half-extents (see AddUser).
+public enum FieldKind { Sphere, Box, Torus, Cylinder, Cone, Ellipsoid, Pyramid, User }
+
+/// FFunction data for <see cref="FieldKind.User"/>: field = max(Eval(q, U) / L, box(q, b)).
+public sealed record UserField(UserFnEval Eval, double[] U, double L);
 
 /// Twist/Bend/Repeat: domain warps of one operand (see <see cref="FrepField.AddWarp"/>). Shell/Gyroid: modifiers of one
 /// operand's value (<see cref="FrepField.AddModifier"/>). Pipe: a leaf (<see cref="FrepField.AddPipe"/>).
-public enum FieldOp { Union, Intersect, Difference, Twist, Bend, Repeat, Shell, Gyroid, Pipe }
+public enum FieldOp { Union, Intersect, Difference, Twist, Bend, Repeat, Blend, Offset, Shell, Gyroid, Pipe }
 
 /// A primitive (by index) or an earlier node (by index).
 public readonly record struct FieldRef(bool IsNode, int Index)
@@ -47,9 +52,11 @@ public readonly record struct FieldRef(bool IsNode, int Index)
 public sealed class FrepField
 {
     // X, Y, Z are the canonical-to-world columns (bounds). Ix, Iy, Iz are the rows of the inverse (the dots in PrimValue).
-    readonly record struct Prim(FieldKind Kind, V3 O, V3 X, V3 Y, V3 Z, V3 P, double Lip, V3 Ix, V3 Iy, V3 Iz);
+    readonly record struct Prim(FieldKind Kind, V3 O, V3 X, V3 Y, V3 Z, V3 P, double Lip, V3 Ix, V3 Iy, V3 Iz, UserField? Fn = null);
     // Rows: warp / modifier / pipe params (null for CSG). Code: CSG blend style code (style + 4 · steps, see Csg.FrepNodeMath).
-    readonly record struct Node(FieldOp Op, double K, FieldRef[] Operands, V4[]? Rows = null, double Code = 0);
+    // Place/Fwd: optional transform M of the node's result, rows as for a placed primitive (M⁻¹ rows + (s(M),0,0,0)).
+    readonly record struct Node(FieldOp Op, double K, FieldRef[] Operands, V4[]? Rows = null, V4[]? Place = null, V4[]? Fwd = null,
+        double Code = 0);
 
     static bool IsWarp(FieldOp op) => op is FieldOp.Twist or FieldOp.Bend or FieldOp.Repeat;
     static bool IsModifier(FieldOp op) => op is FieldOp.Shell or FieldOp.Gyroid;
@@ -64,19 +71,51 @@ public sealed class FrepField
     /// Blend distance of the implicit union used when no roots are declared; 0 = hard union.
     public double Blend { get; init; }
 
+    /// False: no declared roots means an empty field (+infinity everywhere), not the implicit union of every primitive.
+    /// Builders that declare roots explicitly (Scene.FrepFieldBuilder) set this, so a filter matching nothing stays empty.
+    public bool ImplicitUnion { get; init; } = true;
+
     public int Count => prims.Count;
+
+    /// Affine map given by three rows (xyz linear row, w translation): node transforms M (and their inverses).
+    static V3 Apply(V4[] rows, V3 p) =>
+        new(V3.Dot(rows[0].Xyz, p) + rows[0].W, V3.Dot(rows[1].Xyz, p) + rows[1].W, V3.Dot(rows[2].Xyz, p) + rows[2].W);
+
+    /// Inverse of the affine map given by three rows (xyz linear, w translation).
+    static V4[] Invert(V4[] m)
+    {
+        V3 a = m[0].Xyz, b = m[1].Xyz, c = m[2].Xyz;
+        // Columns of the inverse linear part are the cross products of the rows over the determinant.
+        V3 i0 = V3.Cross(b, c), i1 = V3.Cross(c, a), i2 = V3.Cross(a, b);
+        double det = V3.Dot(a, i0);
+        if (det == 0) throw new ArgumentException("singular placement");
+        double s = 1 / det;
+        // inv rows: (i0.X, i1.X, i2.X), ...
+        V3 r0 = new(i0.X * s, i1.X * s, i2.X * s), r1 = new(i0.Y * s, i1.Y * s, i2.Y * s), r2 = new(i0.Z * s, i1.Z * s, i2.Z * s);
+        var t = new V3(m[0].W, m[1].W, m[2].W);
+        return [new(r0.X, r0.Y, r0.Z, -V3.Dot(r0, t)), new(r1.X, r1.Y, r1.Z, -V3.Dot(r1, t)), new(r2.X, r2.Y, r2.Z, -V3.Dot(r2, t))];
+    }
 
     /// <paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/> are the columns of the canonical-to-world map
     /// (the frame axes when the primitive is rigid). <paramref name="lip"/> is σ_min of that map: the local distance is
     /// multiplied by it so the field stays Lipschitz 1 in world space.
-    public int AddPrimitive(FieldKind kind, V3 origin, V3 x, V3 y, V3 p, V3? z = null, double lip = 1)
+    public int AddPrimitive(FieldKind kind, V3 origin, V3 x, V3 y, V3 p, V3? z = null, double lip = 1) =>
+        Add(kind, origin, x, y, p, z, lip, null);
+
+    /// FFunction: like a box (<paramref name="half"/> = clip box half-extents), value max(fn(q) / L, box(q)) in the local frame.
+    public int AddUser(V3 origin, V3 x, V3 y, V3 half, UserField fn, V3? z = null, double lip = 1) =>
+        Add(FieldKind.User, origin, x, y, half, z, lip, fn);
+
+    int Add(FieldKind kind, V3 origin, V3 x, V3 y, V3 p, V3? z, double lip, UserField? fn)
     {
+        if (kind == FieldKind.User && fn == null) throw new ArgumentNullException(nameof(fn), "User primitives need AddUser");
         var zz = z ?? V3.Cross(x, y);
+        // Callers drop invalid maps upstream (SdfTransforms.IsUsableBasis, same test); a silent fallback here would be
+        // a wrong field nobody notices.
         if (!InverseRows(x, y, zz, out var ix, out var iy, out var iz))
-        {
-            ix = x; iy = y; iz = zz;
-        }
-        prims.Add(new Prim(kind, origin, x, y, zz, p, lip, ix, iy, iz));
+            throw new ArgumentException("singular or degenerate primitive map");
+        if (!(lip > 0) || !double.IsFinite(lip)) throw new ArgumentException("primitive map scale must be finite and positive", nameof(lip));
+        prims.Add(new Prim(kind, origin, x, y, zz, p, lip, ix, iy, iz, fn));
         return prims.Count - 1;
     }
 
@@ -84,7 +123,8 @@ public sealed class FrepField
     {
         double det = V3.Dot(x, V3.Cross(y, z));
         double volume = x.Length * y.Length * z.Length;
-        if (!(Math.Abs(det) > 1e-12 * Math.Max(volume, 1e-30)))
+        // Same scale-relative test as SdfTransforms.TryMetrics (normalized columns, no absolute floor).
+        if (!(volume > 0 && double.IsFinite(det / volume) && Math.Abs(det / volume) > 1e-12))
         {
             r0 = r1 = r2 = default;
             return false;
@@ -102,36 +142,43 @@ public sealed class FrepField
     public int AddBox(V3 center, V3 x, V3 y, V3 half) => AddPrimitive(FieldKind.Box, center, x, y, half);
 
     /// Difference is operands[0] minus the rest. Operands must already exist. At least one operand.
-    /// <paramref name="code"/>: blend style code (0 = round; Csg.FrepNodeMath.BlendCode).
-    public int AddNode(FieldOp op, double k, IEnumerable<FieldRef> operands, double code = 0)
+    /// <paramref name="place"/>: optional transform M of the node's result, as rows like a placed primitive's
+    /// (field = result(M⁻¹ p) · s(M)). <paramref name="code"/>: blend style code (0 = round; Csg.FrepNodeMath.BlendCode).
+    public int AddNode(FieldOp op, double k, IEnumerable<FieldRef> operands, V4[]? place = null, double code = 0)
     {
-        nodes.Add(new Node(op, k, [.. operands], Code: code));
+        nodes.Add(new Node(op, k, [.. operands], null, Check(place), place == null ? null : Invert(place), code));
+        hasWarps |= place != null; // a new point context: needs the context-aware evaluator
         return nodes.Count - 1;
     }
 
     /// Shell / Gyroid of <paramref name="child"/>; one row as packed by Csg.FrepNodeMath.ShellRows / GyroidRows.
-    public int AddModifier(FieldOp op, V4[] rows, FieldRef child)
+    public int AddModifier(FieldOp op, V4[] rows, FieldRef child, V4[]? place = null)
     {
         if (!IsModifier(op)) throw new ArgumentOutOfRangeException(nameof(op));
         if (rows.Length != 1) throw new ArgumentException($"{op} needs 1 row", nameof(rows));
-        nodes.Add(new Node(op, 0, [child], rows));
+        nodes.Add(new Node(op, 0, [child], rows, Check(place), place == null ? null : Invert(place)));
+        hasWarps |= place != null;
         return nodes.Count - 1;
     }
 
     /// Pipe leaf; rows as packed by Csg.FrepNodeMath.PipeRowsOf (header + points).
-    public int AddPipe(V4[] rows)
+    public int AddPipe(V4[] rows, V4[]? place = null)
     {
         if (rows.Length < 2) throw new ArgumentException("Pipe needs a header and at least one point row", nameof(rows));
-        nodes.Add(new Node(FieldOp.Pipe, 0, [], rows));
+        nodes.Add(new Node(FieldOp.Pipe, 0, [], rows, Check(place), place == null ? null : Invert(place)));
+        hasWarps |= place != null;
         return nodes.Count - 1;
     }
 
+    static V4[]? Check(V4[]? place) =>
+        place == null || place.Length == 4 ? place : throw new ArgumentException("placement needs 4 rows", nameof(place));
+
     /// Domain warp of <paramref name="child"/>; <paramref name="rows"/> as packed by Csg.FrepWarpMath.Rows (shader uniform layout).
-    public int AddWarp(FieldOp op, V4[] rows, FieldRef child)
+    public int AddWarp(FieldOp op, V4[] rows, FieldRef child, V4[]? place = null)
     {
-        int want = op switch { FieldOp.Twist => 2, FieldOp.Bend => 3, FieldOp.Repeat => 5, _ => throw new ArgumentOutOfRangeException(nameof(op)) };
+        int want = op switch { FieldOp.Twist => 2, FieldOp.Bend => 3, FieldOp.Repeat => 6, _ => throw new ArgumentOutOfRangeException(nameof(op)) };
         if (rows.Length != want) throw new ArgumentException($"{op} needs {want} rows", nameof(rows));
-        nodes.Add(new Node(op, 0, [child], rows));
+        nodes.Add(new Node(op, 0, [child], rows, Check(place), place == null ? null : Invert(place)));
         hasWarps = true;
         return nodes.Count - 1;
     }
@@ -146,7 +193,7 @@ public sealed class FrepField
         lock (sealing)
         {
             if (isSealed) return;
-            if (roots.Count == 0 && prims.Count > 0)
+            if (ImplicitUnion && roots.Count == 0 && prims.Count > 0)
                 roots.Add(FieldRef.Node(AddNode(FieldOp.Union, Blend, Enumerable.Range(0, prims.Count).Select(FieldRef.Primitive))));
             isSealed = true;
         }
@@ -183,6 +230,7 @@ public sealed class FrepField
             {
                 d = v[Slot(n.Operands[0])];
                 if (IsModifier(n.Op)) d = Modify(n, p, d);
+                else if (n.Op == FieldOp.Offset) d -= n.K;
                 else for (int o = 1; o < n.Operands.Length; o++) d = Combine(n, d, v[Slot(n.Operands[o])]);
             }
             v[np + i] = d;
@@ -263,25 +311,78 @@ public sealed class FrepField
         else
         {
             var n = nodes[r.Index];
+            int outer = top;
+            // Node transform M: the body is evaluated at M⁻¹ p in a context of its own, the result scaled by s(M).
+            if (n.Place is { } pl)
+            {
+                p = Apply(pl, p);
+                ctx = Push(ref memo, ref top, stride);
+            }
             if (n.Op == FieldOp.Pipe) d = Pipe(n.Rows!, p);
             else if (IsModifier(n.Op)) d = Modify(n, p, Eval(n.Operands[0], p, ctx, ref memo, ref top, stride));
-            else if (IsWarp(n.Op))
+            else if (n.Op == FieldOp.Offset)
             {
-                var q = Warp(n.Op, n.Rows!, p, out double lip);
+                d = n.Operands.Length == 0
+                    ? double.PositiveInfinity
+                    : Eval(n.Operands[0], p, ctx, ref memo, ref top, stride) - n.K;
+            }
+            else if (n.Op == FieldOp.Blend)
+            {
+                var only = n.Operands[0];
+                // The fillet lives on this node, above the Repeat. The Repeat itself stays a hard nearest-cell warp.
+                if (only.IsNode && nodes[only.Index] is { Op: FieldOp.Repeat, Rows: { } w } rep)
+                    d = RepeatBlend(rep, w, n.K, p, ref memo, ref top, stride);
+                else
+                    d = Eval(only, p, ctx, ref memo, ref top, stride);
+            }
+            else if (n.Rows is { } w)
+            {
                 int saved = top;
-                d = Eval(n.Operands[0], q, Push(ref memo, ref top, stride), ref memo, ref top, stride) / lip;
-                top = saved;
+                if (n.Op == FieldOp.Repeat)
+                {
+                    // Min over the copies that can be nearest; fresh context per copy.
+                    V3 x = w[1].Xyz, y = w[2].Xyz, z = V3.Cross(x, y), dl = p - w[0].Xyz;
+                    var (i0, i1) = RepeatCells(V3.Dot(dl, x), w[0].W, w[3].X, w[4].X, w[5].X);
+                    var (j0, j1) = RepeatCells(V3.Dot(dl, y), w[1].W, w[3].Y, w[4].Y, w[5].Y);
+                    var (k0, k1) = RepeatCells(V3.Dot(dl, z), w[2].W, w[3].Z, w[4].Z, w[5].Z);
+                    d = double.PositiveInfinity;
+                    for (int k = k0; k <= k1; k++)
+                    for (int j = j0; j <= j1; j++)
+                    for (int i = i0; i <= i1; i++)
+                    {
+                        var q = p - x * (i * w[0].W) - y * (j * w[1].W) - z * (k * w[2].W);
+                        d = Math.Min(d, Eval(n.Operands[0], q, Push(ref memo, ref top, stride), ref memo, ref top, stride));
+                        top = saved;
+                    }
+                }
+                else
+                {
+                    var q = Warp(n.Op, w, p, out double lip);
+                    d = Eval(n.Operands[0], q, Push(ref memo, ref top, stride), ref memo, ref top, stride) / lip;
+                    top = saved;
+                }
             }
             else
             {
                 d = Eval(n.Operands[0], p, ctx, ref memo, ref top, stride);
                 for (int o = 1; o < n.Operands.Length; o++) d = Combine(n, d, Eval(n.Operands[o], p, ctx, ref memo, ref top, stride));
             }
+            if (n.Place is { } pl2) d *= pl2[3].X;
+            top = outer;
         }
         return memo[slot] = d;
     }
 
-    // Domain warps, ported from opTwist/opBend/opRepeat in Shaders/FrepShaderGen.cs; keep in sync. Returns the point to
+    // One axis of repeatCells in Shaders/FrepShaderGen.cs (keep in sync): local coord, spacing, index range, reach in cells.
+    static (int C0, int C1) RepeatCells(double local, double s, double lo, double hi, double r)
+    {
+        double t = local / Math.Max(s, 1e-9), a = Math.Clamp(Math.Round(t), lo, hi);
+        double fwd = Math.Ceiling(r), back = Math.Max(Math.Ceiling(r - 0.5), 0);
+        bool up = t >= a;
+        return ((int)Math.Max(a - (up ? back : fwd), lo), (int)Math.Min(a + (up ? fwd : back), hi));
+    }
+
+    // Domain warps, ported from opTwist/opBend in Shaders/FrepShaderGen.cs; keep in sync. Returns the point to
     // evaluate the child at; lip = local Lipschitz bound (child value is divided by it). Row layouts: see the GLSL.
     static V3 Warp(FieldOp op, V4[] w, V3 p, out double lip)
     {
@@ -327,20 +428,62 @@ public sealed class FrepField
                 }
                 return a + d * h0 + n * y0 + b;
             }
-            case FieldOp.Repeat:
-            {
-                V3 o = w[0].Xyz, x = w[1].Xyz, y = w[2].Xyz, z = V3.Cross(x, y);
-                var dl = p - o;
-                static double Cell(double local, double s, double lo, double hi) =>
-                    Math.Clamp(Math.Round(local / Math.Max(s, 1e-9), MidpointRounding.AwayFromZero), lo, hi) * s;
-                double ix = Cell(V3.Dot(dl, x), w[0].W, w[3].X, w[4].X);
-                double iy = Cell(V3.Dot(dl, y), w[1].W, w[3].Y, w[4].Y);
-                double iz = Cell(V3.Dot(dl, z), w[2].W, w[3].Z, w[4].Z);
-                return p - x * ix - y * iy - z * iz;
-            }
             default:
                 throw new ArgumentOutOfRangeException(nameof(op));
         }
+    }
+
+    /// Smooth union of a Repeat's child, driven by the blend node above it. k = 0 is the nearest cell only.
+    /// k &gt; 0 also folds in the adjacent cells, so every copy blends into its neighbors. Matches the shader.
+    double RepeatBlend(in Node repeat, V4[] w, double k, V3 p, ref double[] memo, ref int top, int stride)
+    {
+        int rad = k > 0 ? 1 : 0;
+        double acc = double.PositiveInfinity;
+        for (int dz = -rad; dz <= rad; dz++)
+            for (int dy = -rad; dy <= rad; dy++)
+                for (int dx = -rad; dx <= rad; dx++)
+                {
+                    // An offset past the box is not clamped back onto a copy already folded in. smin of a
+                    // field with itself is that field minus k/4, which is why the outer copies grew.
+                    if (!TryRepeatCell(w, p, dx, dy, dz, out var q)) continue;
+                    int saved = top;
+                    double child = Eval(repeat.Operands[0], q, Push(ref memo, ref top, stride), ref memo, ref top, stride);
+                    top = saved;
+                    acc = Smin(acc, child, k);
+                }
+        return acc;
+    }
+
+    /// Copy at <paramref name="dx"/>/<paramref name="dy"/>/<paramref name="dz"/> from the nearest cell.
+    /// False when that cell is outside the index range. Same rounding as repeatCell in the shader.
+    static bool TryRepeatCell(V4[] w, V3 p, double dx, double dy, double dz, out V3 q)
+    {
+        V3 o = w[0].Xyz, x = w[1].Xyz, y = w[2].Xyz, z = V3.Cross(x, y);
+        var dl = p - o;
+        static bool Axis(double local, double s, double lo, double hi, double delta, out double at)
+        {
+            double id = Math.Clamp(Math.Round(local / Math.Max(s, 1e-9), MidpointRounding.AwayFromZero), lo, hi) + delta;
+            at = id * s;
+            return id >= lo && id <= hi;
+        }
+        bool ok = Axis(V3.Dot(dl, x), w[0].W, w[3].X, w[4].X, dx, out double ix)
+            & Axis(V3.Dot(dl, y), w[1].W, w[3].Y, w[4].Y, dy, out double iy)
+            & Axis(V3.Dot(dl, z), w[2].W, w[3].Z, w[4].Z, dz, out double iz);
+        q = p - x * ix - y * iy - z * iz;
+        return ok;
+    }
+
+    /// Copy at a whole-cell offset from the nearest cell. Same rounding and clamp as opRepeat in the shader.
+    static V3 RepeatAt(V4[] w, V3 p, double dx, double dy, double dz)
+    {
+        V3 o = w[0].Xyz, x = w[1].Xyz, y = w[2].Xyz, z = V3.Cross(x, y);
+        var dl = p - o;
+        static double Cell(double local, double s, double lo, double hi, double delta) =>
+            Math.Clamp(Math.Round(local / Math.Max(s, 1e-9), MidpointRounding.AwayFromZero) + delta, lo, hi) * s;
+        double ix = Cell(V3.Dot(dl, x), w[0].W, w[3].X, w[4].X, dx);
+        double iy = Cell(V3.Dot(dl, y), w[1].W, w[3].Y, w[4].Y, dy);
+        double iz = Cell(V3.Dot(dl, z), w[2].W, w[3].Z, w[4].Z, dz);
+        return p - x * ix - y * iy - z * iz;
     }
 
     /// Upper bound of Warp's lip over the child's extent.
@@ -386,10 +529,18 @@ public sealed class FrepField
             FieldKind.Cone => Cone(x, y, z, s.P),
             FieldKind.Ellipsoid => Ellipsoid(x, y, z, s.P),
             FieldKind.Pyramid => Pyramid(x, y, z, s.P),
+            FieldKind.User => UserValue(s, x, y, z),
             _ => throw new ArgumentOutOfRangeException(nameof(s)),
         };
         // σ_min(A). Ellipsoid already folds its own scale in; its lip is 1.
         return value * s.Lip;
+    }
+
+    /// max(f/L, sdBox) like the shader; NaN f → the box (GPU max returns the non-NaN operand).
+    static double UserValue(in Prim s, double x, double y, double z)
+    {
+        double f = s.Fn!.Eval(x, y, z, s.Fn.U) / s.Fn.L, box = Box(x, y, z, s.P);
+        return double.IsNaN(f) ? box : Math.Max(f, box);
     }
 
     static double Box(double x, double y, double z, V3 b)
@@ -489,8 +640,20 @@ public sealed class FrepField
             double t = nodeLevel[i];
             if (t == none) continue;
             var n = nodes[i];
+            if (n.Place is { } pl) t /= pl[3].X; // {body(M⁻¹p)·s <= t} = M × {body <= t/s}
             if (n.Op == FieldOp.Pipe) continue;
             if (n.Op == FieldOp.Difference || IsModifier(n.Op)) { Ask(n.Operands[0], t); continue; }
+            if (n.Op == FieldOp.Offset)
+            {
+                if (n.Operands.Length > 0) Ask(n.Operands[0], t + n.K);
+                continue;
+            }
+            // The fillet bulges by up to k past the hard copies, same bound as a many-operand union.
+            if (n.Op == FieldOp.Blend)
+            {
+                foreach (var o in n.Operands) Ask(o, t + Math.Max(n.K, 0));
+                continue;
+            }
             if (IsWarp(n.Op)) { Ask(n.Operands[0], t * MaxLip(n.Op, n.Rows!)); continue; }
             double d = 0;
             if (n.Op == FieldOp.Union && n.Operands.Length > 1 && n.K > 0)
@@ -509,7 +672,9 @@ public sealed class FrepField
             var n = nodes[i];
             if (n.Op == FieldOp.Pipe)
             {
-                nodeBox[i] = PipeBounds(n.Rows!, nodeLevel[i]);
+                var pipeBox = PipeBounds(n.Rows!, n.Place is { } pp ? nodeLevel[i] / pp[3].X : nodeLevel[i]);
+                if (n.Fwd is { } pf && !IsEmpty(pipeBox)) pipeBox = MapBox(pf, pipeBox);
+                nodeBox[i] = pipeBox;
                 continue;
             }
             var box = Box(n.Operands[0]);
@@ -527,6 +692,7 @@ public sealed class FrepField
                         new V3(Math.Max(box.Min.X, other.Min.X), Math.Max(box.Min.Y, other.Min.Y), Math.Max(box.Min.Z, other.Min.Z)),
                         new V3(Math.Min(box.Max.X, other.Max.X), Math.Min(box.Max.Y, other.Max.Y), Math.Min(box.Max.Z, other.Max.Z)));
                 }
+            if (n.Fwd is { } fwd && !IsEmpty(box)) box = MapBox(fwd, box);
             nodeBox[i] = IsEmpty(box) ? Empty : box;
         }
 
@@ -652,16 +818,30 @@ public sealed class FrepField
         return box;
     }
 
+    /// World box of an affine map of a box (its 8 corners mapped).
+    static (V3 Min, V3 Max) MapBox(V4[] fwd, (V3 Min, V3 Max) c)
+    {
+        var box = Empty;
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Apply(fwd, new V3((i & 1) == 0 ? c.Min.X : c.Max.X, (i & 2) == 0 ? c.Min.Y : c.Max.Y, (i & 4) == 0 ? c.Min.Z : c.Max.Z));
+            box = Join(box, (p, p));
+        }
+        return box;
+    }
+
     /// World-axis bounds of {primitive field <= t}, t >= 0, from a box in the primitive's local frame.
     static (V3 Min, V3 Max) PrimBounds(in Prim s, double t)
     {
         // Field value is σ_min · local distance, so {field <= t} is a local offset of t / σ_min.
-        double grow = s.Lip > 1e-12 ? t / s.Lip : t;
+        double grow = t / s.Lip; // Lip is validated finite and positive in AddPrimitive, however small
         V3 lo, hi;
         switch (s.Kind)
         {
             case FieldKind.Sphere: hi = new V3(s.P.X + grow, s.P.X + grow, s.P.X + grow); lo = hi * -1; break;
-            case FieldKind.Box: hi = new V3(s.P.X + grow, s.P.Y + grow, s.P.Z + grow); lo = hi * -1; break;
+            case FieldKind.Box:
+            case FieldKind.User: // clipped by its box: max(f, box) <= t needs box <= t
+                hi = new V3(s.P.X + grow, s.P.Y + grow, s.P.Z + grow); lo = hi * -1; break;
             case FieldKind.Torus: hi = new V3(s.P.X + s.P.Y + grow, s.P.Y + grow, s.P.X + s.P.Y + grow); lo = hi * -1; break;
             case FieldKind.Cylinder: hi = new V3(s.P.Y + grow, s.P.X + grow, s.P.Y + grow); lo = hi * -1; break;
             case FieldKind.Cone:

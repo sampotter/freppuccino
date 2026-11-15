@@ -9,11 +9,13 @@ src/Freppuccino/Ui/
   IWebTransport.cs   per-OS part: WebView2Transport.cs (Windows), EtoWebTransport.cs (macOS)
   UiController.cs    Rhino events → snapshots for the page; page requests → Rhino (whitelisted)
   UiProtocol.cs      message types  ◄── keep in sync ──►  src/ui/src/bridge/protocol.ts
+  PrimitiveProxy.cs  setParam: validates + writes SDF.<name>, rebuilds the proxy brep
+  UserFnView.cs      FFunction (sdUser) user text → compiled userFn payload
 src/ui/              Vite + React 19 + TypeScript + Tailwind 4 + shadcn/ui (radix), styled with the FRepuccino brand kit
   src/brand/         fonts, command icons, wordmark copied from brand-kit/ (icons recoloured: ink → currentColor)
   src/index.css      brand tokens (brand-kit/tokens.json) mapped onto shadcn's CSS variables; Latte / Espresso themes
   src/bridge/        host.ts (transport + store + useHost), mock-host.ts (fake Rhino for the browser)
-  src/components/    scene-tree.tsx (browser), inspector.tsx (create / primitive / combine), param-slider.tsx
+  src/components/    scene-tree.tsx (browser), inspector.tsx (create / primitive / combine), param-slider.tsx, code-view.tsx (FFunction source)
   src/lib/scene.ts   display names, icons, labels per SDF type / operation
   src/ai/            AI assistant (AI tab): agent loop, tools, skills; see docs/ai.md
 ```
@@ -45,7 +47,7 @@ In Rhino, run `FrepPanel`, or open the Freppuccino panel from the panels menu.
 The UI follows `brand-kit/` (tokens.json, fonts, command icons). To refresh after the kit changes: re-copy the
 woff2 fonts and the `light` command icons into `src/ui/src/brand/`, replacing `#3B2620` with `currentColor` in the
 icons (the dark set differs only in that colour), and update the colour values in `src/ui/src/index.css`.
-The kit has no cone / pyramid / ellipsoid icons yet; `src/brand/icons/{cone,pyramid,ellipsoid}.svg` are stand-ins
+The kit has no cone / pyramid / ellipsoid / function icons yet; `src/brand/icons/{cone,pyramid,ellipsoid,function}.svg` are stand-ins
 drawn in its style, so replace them when the kit gets official ones. Primitive names, icons, parameter labels and
 creating commands live in one table, `PRIMITIVES` in `src/ui/src/lib/scene.ts`.
 
@@ -60,7 +62,7 @@ Ids are strings: a primitive's Rhino object id (GUID), or a CSG node's name (`N3
 | `state {scene, selection, settings: {units}, theme}` | reply to `ready`; active document changed |
 | `scene {scene}` | object added/deleted/replaced/attributes changed, CSG tree changed (coalesced on Idle) |
 | `selection {ids}` | Rhino selection or panel node selection changed |
-| `notice {level, text}` | feedback, including "not implemented yet" from stubs |
+| `notice {level, text}` | feedback, e.g. a rejected `setParam` value |
 | `aiToolResult {callId, ok, result?, error?}` | reply to `aiTool` ([ai.md](ai.md)) |
 
 | Page → host | Status |
@@ -68,13 +70,13 @@ Ids are strings: a primitive's Rhino object id (GUID), or a CSG node's name (`N3
 | `ready` | ✅ |
 | `select {ids, mode: replace\|add\|toggle}` | ✅ primitives → Rhino selection; nodes → panel node selection. While FUnion/FIntersect/FDifference wait for operands, a node click is sent to the command line instead |
 | `setVisible {id, visible}` | ✅ primitive: Rhino show/hide; node: `FrepNode.Hidden`, dropped from the shader like a hidden primitive (undoable) |
-| `runCommand {command}` | ✅ whitelist only: `FBox`, `FSphere`, `FCylinder`, `FCone`, `FPyramid`, `FEllipsoid`, `FTorus`, `Freppuccino` |
+| `runCommand {command}` | ✅ whitelist only (`UiController.AllowedCommands`): `FBox`, `FSphere`, `FCylinder`, `FCone`, `FPyramid`, `FEllipsoid`, `FTorus`, `FFunction`, `FTwist`, `FBend`, `FRepeat`, `Freppuccino` |
 | `applyOperation {operands, op, k}` | ✅ new CSG node; selects it |
 | `setOperation {id, op, k, preview?}` | ✅ edit a node live. `preview: true` = drag tick, applied without undo; the next non-preview one ends the gesture as one undo step |
 | `setNodeParam {id, name, value, preview?}` | ✅ edit a twist/bend/repeat param; same preview/commit gesture as `setOperation` |
 | `deleteNodes {ids}` | ✅ nodes still used by other nodes are kept |
 | `setColor {id, color, preview?}` | ✅ write `SDF.Color` (`"#RRGGBB"`) on a primitive; same preview/commit gesture as `setOperation` (one "F-rep color" undo step per picker drag) |
-| `setParam {id, name, value}` | **stub**: edit `SDF.<name>` on a primitive |
+| `setParam {id, name, value, preview?}` | ✅ write `SDF.<name>` on a primitive and rebuild its proxy brep (`PrimitiveProxy`); same preview/commit gesture as `setOperation` (one "Edit F-rep parameter" undo step per drag). Sizes must be > 0 (cone radii ≥ 0). sdUser also takes `L` (> 0) and `u.<param>` (declared in the code, any finite value); both written round-trip exact, always stored |
 | `aiTool {callId, tool, args}` | ✅ AI agent tool call (`Ai/AiTools.cs`), see [ai.md](ai.md) |
 | `aiSaveRun {title, transcript, images}` | ✅ writes an AI run log (`Ai/AiRunLog.cs`) |
 
@@ -89,6 +91,7 @@ Live edits: the inspector has no Update button. An op click sends one `setOperat
 ```
 SceneNode { id, kind: primitive|operation, name?, visible, locked, missing?,
             sdfType?, params?, color?,  // primitive; color = SDF.Color "#RRGGBB" (white if missing)
+            userFn?,                    // sdUser only, see below; params then = just b.x/b.y/b.z
             op?, k?, children?,         // operation: children are operands, in order
             ref?, refMissing? }         // twist|bend|repeat: params = {angle} / {angle, direction} / {x, y, z}; ref = line/box id
 ```
@@ -96,5 +99,22 @@ SceneNode { id, kind: primitive|operation, name?, visible, locked, missing?,
 `UiController.BuildScene` walks the doc's `FrepTree` (Csg/FrepTree.cs, stored as plugin document data): roots are nodes nothing references, then primitives no node uses. The tree is a DAG, so a shared operand is listed under each parent. Deleted operands show as `missing`.
 
 Operation nodes aren't Rhino objects, so their selection is kept by `UiController` (per document). FUnion/FIntersect (and FTwist/FBend/FRepeat/FShell/FGyroid, single node) take it as preselection (`UiController.TakeSelectedNodes`); Rhino deselect-all clears it.
+
+### FFunction (sdUser)
+
+A box (frame + half-extents `SDF.b.*`, proxy brep = the box) whose SDF is user code. `Ui/UserFnView.cs` reads it straight from user text (not via `FrepScene`) and compiles it with `UserFnCompiler.Compile` (cached by source) on every scene snapshot:
+
+```
+userFn { code,                          // SDF.Code
+         ok, hash?,                     // compiled; hash = UserFnProgram.Hash
+         diagnostics: [{line, column, message}],   // 1-based
+         params: [{name, value, default}],         // declared order; value = SDF.u.<name> or default; [] if !ok
+         lipschitz,                     // SDF.L; 1 if missing / invalid
+         error? }                       // set when SDF.L is invalid (not drawn; FrepScene rejects it), shown under the code
+```
+
+Any user-text edit (panel, `SetUserText`, an AI agent) fires `ModifyObjectAttributes` → the next Idle sends a new `scene`, so code changes show up without reselecting.
+
+Inspector: read-only code view (`components/code-view.tsx`: line numbers, diagnostic lines tinted red with the message on hover, 240px cap with a resize handle + expand, copy), diagnostics list (click → scroll to line) or "Compiles OK · <hash>", then a slider per declared param, `Lipschitz L`, and the bounding box half-extents. Param slider range from default d: d > 0 → [0, 4d], d < 0 → [4d, 0], d = 0 → [−1, 1]; step ≈ span/100; typed values may go past either end. The code isn't editable from the panel.
 
 Inspector: one primitive → its color (`SDF.Color`: current-color swatch / picker + hex field; new primitives start white `#FCFCFC`) and parameters; one node → edit op / k live (no Update button), delete; ≥ 2 selected → combine them (pick order; first = subtract target).

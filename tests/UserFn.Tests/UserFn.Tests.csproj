@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Standalone tests for the FFunction compiler: compiles src/Freppuccino/UserFn/** directly (no RhinoCommon),
+       plus the Rhino-free shaderc / SPIRV-Cross P/Invokes to validate emitted GLSL -> SPIR-V -> MSL / HLSL. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../src/Freppuccino/UserFn/**/*.cs" Link="UserFn/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../../src/Freppuccino/Shaders/ShaderCompiler.cs;../../src/Freppuccino/Shaders/NativeLibs.cs;../../src/Freppuccino/Shaders/Uniforms.cs" Link="Shaders/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Silk.NET.Shaderc.Native" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.SPIRV.Cross.Native" Version="2.23.0" />
+  </ItemGroup>
+
+</Project>

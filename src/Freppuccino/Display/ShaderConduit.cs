@@ -19,6 +19,17 @@ public sealed class ShaderConduit : DisplayConduit
     const int TitleClearance = 28;
     bool loggedFailure, loggedCap;
 
+    /// F-rep control breps aren't drawn by Rhino in this mode; we outline them (ControlOutlines).
+    protected override void PreDrawObject(DrawObjectEventArgs e) => ControlOutlines.Suppress(e);
+
+    /// Build error (shaderc / MSL / HLSL / PSO text) of <paramref name="doc"/>'s current scene program, or null (no program,
+    /// it builds, or nothing has drawn yet). Builds it now if needed (cached), so it's current before the next redraw.
+    /// Read by the AI tools (get_scene, get_function). Draws keep the last good program meanwhile (see DrawScene).
+    public static string? ShaderError(RhinoDoc doc) =>
+        FrepScene.Get(doc).Program is { } program ? GpuBackends.CompileError(program) : null;
+    // Per doc (RuntimeSerialNumber): last scene program that drew.
+    static readonly Dictionary<uint, ShaderSource> lastGood = [];
+
     protected override void PostDrawObjects(DrawEventArgs e)
     {
         var dp = e.Display;
@@ -35,8 +46,12 @@ public sealed class ShaderConduit : DisplayConduit
                 RhinoApp.WriteLine($"Freppuccino: uniform budget full, {scene.Dropped} primitives not drawn");
                 loggedCap = true;
             }
+            // Control outlines first, so blends drawn over them hide what they cover. Captures (AI screenshots,
+            // AiCapture.CleanCapture) show just the model.
+            if (!AiCapture.Active) ControlOutlines.Draw(dp, e.RhinoDoc, selected: false);
+            dp.Flush(); // Rhino batches curves; without this they land after (over) our GPU draw
             if (scene.Program != null)
-                drew |= gpu.Draw(dp, scene.Program, FrepShaderGen.SceneUniforms(dp.Viewport, scene));
+                drew |= DrawScene(gpu, dp, e.RhinoDoc, scene);
 
             if (!AiCapture.Active) // AI screenshots: just the model
             {
@@ -53,12 +68,31 @@ public sealed class ShaderConduit : DisplayConduit
         }
     }
 
+    /// Draws the scene program. If it failed to compile, draws the doc's last good program instead, but only when it reads
+    /// the uniforms the same way (same Layout: e.g. FFunction code edited, param count unchanged); else nothing. The error
+    /// is reported by <see cref="ShaderError"/>; failed programs are not retried (backend cache).
+    static bool DrawScene(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, FrepSceneData scene)
+    {
+        var program = scene.Program!;
+        var uniforms = FrepShaderGen.SceneUniforms(dp.Viewport, scene, Selection.FrepSelection.Roots(doc));
+        if (gpu.Draw(dp, program, uniforms))
+        {
+            lastGood[doc.RuntimeSerialNumber] = program;
+            return true;
+        }
+        if (gpu.CompileError(program) == null) return false; // e.g. a pass we can't draw in
+        return lastGood.TryGetValue(doc.RuntimeSerialNumber, out var good) && good.Hash != program.Hash &&
+               good.Layout.Length > 0 && good.Layout == program.Layout && gpu.Draw(dp, good, uniforms);
+    }
+
     protected override void DrawForeground(DrawEventArgs e)
     {
         var dp = e.Display;
         if (dp == null || AiCapture.Active || !FreppuccinoDisplayMode.IsActive(dp) || GpuBackends.For(dp) == null) return;
         try
         {
+            // Selected leaves: their outline in the selection colour, over the blends.
+            ControlOutlines.Draw(dp, e.RhinoDoc, selected: true);
             var (r, _) = BadgeRect(dp);
             dp.Draw2dText(Badge, System.Drawing.Color.FromArgb(30, 30, 30), new Point2d((r.Left + r.Right) * 0.5, (r.Top + r.Bottom) * 0.5), true, BadgeTextHeight, "Arial");
         }

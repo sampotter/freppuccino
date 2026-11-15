@@ -30,11 +30,17 @@ Programs:
 
 FZebra (`Commands/FZebraCommand.cs`, window `Ui/ZebraOptionsForm.cs`, session-only `FrepSettings.Zebra*`): like Rhino's Zebra, the command opens a modeless "Zebra Options" window (stripe direction vertical/horizontal, stripe size thin↔thick, two stripe colors, all live); zebra is on while it is open, closing it (or `FZebraOff`) turns it off. Header row `zebraCfg` = (stripe count, 0 = off; 1 vertical / 0 horizontal; color 1; color 2 as packed 0xRRGGBB). `sceneColor()` also flags hits within the pixel tolerance of any FUnion node's surface (fillets included); those pixels are drawn unlit in bands of the reflected view direction's angle from the camera's right (vertical) or up (horizontal) axis. Uniforms only, so changing options never recompiles.
 
-Header (8 vec4 rows, `HeaderRows`): camPos, camX, camY, camZ, frustum, params, bound, zebraCfg. Then data rows in `Compile()` order: prims (sphere 1 row, others 3), prim colors (4 per row), node rows (one block per live warp / shell / gyroid / live pipe, tree order = `FrepSceneData.RowNodes`), then CSG nodes' (k, blend style code) pairs (2 per row). `PrimRowBudget(tree)` = data rows − k rows − node rows (prims + their color rows must fit); prims past it are dropped.
+Header (9 vec4 rows, `HeaderRows`): camPos, camX, camY, camZ, frustum, params, bound, zebraCfg, selColor. Then data rows in `Compile()` order: prims (`FrepShaderGen.Rows(prim)`), prim colors (4 per row), node rows (one block per live warp / shell / gyroid / live pipe, tree order = `FrepSceneData.RowNodes`), node transform rows (`Placement.ShaderRows` per node with a matrix M), then (k, blend style code) pairs (2 per row) for every node that reads a k (CSG, Blend, Offset; code 0 for the last two), then root selection flags. `PrimRowBudget(tree)` = data rows − k rows − node rows − transform rows − flag rows (prims + their color rows must fit); prims past it are dropped.
+
+Prim rows:
+- sphere: 1 row (center, s).
+- ellipsoid: 3 rows (origin, r.x), (unit X, r.y), (unit Y, r.z); Z = X × Y.
+- box / torus / cylinder / cone / pyramid: 4 rows (origin, P.x), (A⁻¹ row 0, P.y), (A⁻¹ row 1, P.z), (A⁻¹ row 2, σ_min(A)). A = canonical-to-world map (`SDF.Linear.*`, else the frame axes, σ_min = 1); distance × σ_min stays 1-Lipschitz.
+- function (FFunction, `SDF.Type = sdUser`): the 4 box rows (P = clip box half-extents b) + ⌈(1 + n)/4⌉ rows for n params: `.x` of the first = L, then the n param values in declaration order, packed xyzw.
 
 ### Blend styles (FUnion / FIntersect / FDifference `Style`, `Steps`)
 
-CSG nodes store `Params = [style, steps]` (empty = round, as in files from before 1.3). The shader gets one float per node next to its k: `code = style + 4 · steps` (`Csg/FrepNodeMath.BlendCode`), decoded in `bmin` / `bmax`, so switching style never recompiles. k is the blend size for every style.
+CSG nodes store `Params = [style, steps]` (empty = round, as in files from before 1.4). The shader gets one float per node next to its k: `code = style + 4 · steps` (`Csg/FrepNodeMath.BlendCode`), decoded in `bmin` / `bmax`, so switching style never recompiles. k is the blend size for every style.
 
 | Style | Join (union; intersect/difference via `bmax(a, b) = −bmin(−a, −b)`) | Notes |
 |---|---|---|
@@ -58,7 +64,16 @@ Shared row math: `Csg/FrepNodeMath.cs` (feeds the shader uniforms and the mesher
 - Missing cases: shell / gyroid with child missing → empty; pipe whose curve is deleted or not a curve → empty (panel says so); hidden → absent.
 - Drags: pipe curves under a gumball drag move their sampled points (`SdPipe.Transformed`), like warp refs.
 - `bound`: shell / gyroid = child's box (they only remove material); pipe = points ± largest radius.
-- Mesher (`Meshing/FrepField.cs`): `Modify` / `Pipe` / `Bmin` are line-for-line ports of `opShell` / `opGyroid` / `sdPipe` / `bmin`; keep in sync.
+- Mesher (`Meshing/FrepField.cs`): `Modify` / `Pipe` / `Bmin` are line-for-line ports of `opShell` / `opGyroid` / `sdPipe` / `bmin`; keep in sync. CPU field built by `Scene/FrepFieldBuilder.cs`.
+- Node transforms (M) apply to shell / gyroid / pipe nodes like any other node. Pipe curves under a transformed root follow it like warp references (`FREP.Applied`; the pipe samples A⁻¹ × the curve).
+
+### FFunctions (user code)
+
+Per-object DSL source (`SDF.Code`, compiled by `UserFn/UserFnCompiler`, cached by source) → GLSL `float ufn_<hash>(vec3 p, float u0, …)`, emitted once per distinct program before `map()`; term = `max(ufn_<hash>(q, params…) / L, sdBox(q, b)) * σ_min` with q from `toLocalAffine` (world units, box frame). Params/L are uniforms (sliders never recompile); the code is structure (editing it recompiles; the shader cache key includes the program hashes). The fragment shader's shared helpers (smin, smax, dot2, sdBox, sdTorus, sdCappedCylinder, sdCappedCone, sdEllipsoid, sdPyramid, sdPyramidScaled) come from `UserFnLibrary.Glsl`, the same library user code calls. A function whose code doesn't compile is dropped like an over-budget prim (missing leaf; `FrepSceneData.FailedFunctions`). Transforms: rigid → frame; any scale / shear → `SDF.Linear.*` (the function stretches with the box; b is never rescaled). Mesher: `FieldKind.User` evaluates the program's C# delegate (`UserFnProgram.Cpu`) the same way. Guide for users / agents: `.claude/skills/freppuccino-ffunction/SKILL.md`.
+
+### Shader compile failures
+
+Backends cache failures per `ShaderSource.Hash` (never retried) and report them via `IGpuBackend.CompileError`. `ShaderConduit` then draws the doc's last successfully drawn scene program instead, but only if its `ShaderSource.Layout` (per-prim row shapes + row-owning node ops + k count + transform / flag rows) equals the failed one's, so it reads the current uniforms correctly (e.g. function code edited, param count unchanged); otherwise it draws nothing. `ShaderConduit.ShaderError(doc)` reports the build error of the doc's current scene program (via `IGpuBackend.Compile`, which builds it on the last-seen device if no draw has yet, so AI tools see it before the redraw), shown by `get_function` / `get_scene`. Metal keeps shader-compile errors per hash and PSO errors per (hash, format); `CompileError` reports the former, else the PSO error for the format it draws with.
 
 ### Warps (FTwist / FBend / FRepeat)
 
@@ -68,14 +83,14 @@ One operand each. Node stores `Ref` (Guid of a Rhino line or box, read live via 
 |---|---|---|---|---|
 | Twist | line | angle (°, total start→end) | 2: (start, rad/unit), (dir, extent) | rotate about the infinite axis; linear past the ends |
 | Bend | line | angle (°, over line length), direction (° about axis; 0 = world +Z ⟂ axis, +X if axis vertical) | 3: (start, L), (dir, β), (n, minR) | arc of radius L/β; before start unchanged, past end rigid tangent continuation |
-| Repeat | box | x, y, z spacing (model units) | 5: (anchor, sx), (X, sy), (Y, sz), lo, hi | lattice anchored at child bbox centre, axes = box frame; cell = clamp(round(local/s), lo, hi), lo/hi so copies stay in the box |
+| Repeat | box | x, y, z spacing (model units) | 6: (anchor, sx), (X, sy), (Y, sz), lo, hi, reach | lattice anchored at child bbox centre, axes = box frame; lo/hi so copies stay in the box; min over cells that can hold the nearest copy ([IQ](https://iquilezles.org/articles/sdfrepetition/)): clamped nearest cell + neighbor on p's side (2×2×2), widened by reach = child half-extent / s (≤ 2) when copies overlap |
 
-- Codegen: each warp opens a point context `q{c}`; its subtree is re-emitted in that context (memoized by operand × context).
-- Distance: twist/bend divide the child value by a per-point Lipschitz bound (`l{c}`, clamped by child extent); repeat doesn't (clips a child wider than the spacing).
+- Codegen: each warp opens a point context `q{c}`; its subtree is re-emitted in that context (memoized by operand × context). Repeat emits the subtree once inside a cell loop (`repeatCells` / `repeatAt`), min'd into the node value.
+- Distance: twist/bend divide the child value by a per-point Lipschitz bound (`l{c}`, clamped by child extent); repeat doesn't (rigid); exact for any child shape up to reach 2 (child ≤ ~4 spacings wide), may overshoot past that.
 - Missing cases: ref deleted / wrong type → passthrough (child unwarped; panel says so); child missing → empty; node hidden → absent.
-- `bound` (raymarch sphere): computed per frame from in-memory prims/warps (`FrepShaderGen.Bound`), so it follows drags. Prims = sphere around frame origin; union/intersect = union of operand boxes; difference = base; hidden node = absent; warps via `FrepField.WarpBox` (shared with the mesher): twist = cylinder about axis over child's axial span, bend = child box ∪ annular arc sector ∪ rigidly moved tail corners, repeat = child box ⊕ farthest cell offsets. Padded by Σk × max ellipsoid stretch. `FrepScene.Bounds` (warp extent/anchor, nested warps) uses the same `Warped`.
+- `bound` (raymarch sphere): computed per frame from in-memory prims/warps (`FrepShaderGen.Bound`), so it follows drags. Prims = sphere around frame origin (functions: their clip box); union/intersect = union of operand boxes; difference = base; hidden node = absent; warps via `FrepField.WarpBox` (shared with the mesher): twist = cylinder about axis over child's axial span, bend = child box ∪ annular arc sector ∪ rigidly moved tail corners, repeat = child box ⊕ farthest cell offsets. Padded by Σk × max ellipsoid stretch. `FrepScene.Bounds` (warp extent/anchor, nested warps) uses the same `Warped`.
 - Shared math: `Csg/FrepWarpMath.cs` (ref resolution, `SdWarp` extent/anchor, packed rows, bend frame) feeds both the shader uniforms and the mesher.
-- Mesher (`Meshing/FrepField.cs`): line-for-line port of `opTwist`/`opBend`/`opRepeat` with per-warp point contexts; keep in sync with the GLSL. Only diff: repeat rounds halves away from zero (GLSL `round` is driver-defined on exact cell boundaries).
+- Mesher (`Meshing/FrepField.cs`): line-for-line port of `opTwist`/`opBend`/`opRepeat` with per-warp point contexts (one per repeat cell); keep in sync with the GLSL.
 - Known: bend `lip` jumps between arc and straight regions (field shrinks, surface unaffected); twist/bend Lipschitz clamp only holds within child extent; repeat assumes the child fits one cell.
 
 Original slice program (removed):

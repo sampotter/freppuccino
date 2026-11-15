@@ -5,3 +5,4 @@ using Rhino.PlugIns;
 [assembly: PlugInDescription(DescriptionType.Organization, "")]
 [assembly: PlugInDescription(DescriptionType.Email, "")]
 [assembly: PlugInDescription(DescriptionType.WebSite, "")]
+[assembly: PlugInDescription(DescriptionType.Icon, Freppuccino.FreppuccinoPlugin.IconResource)]

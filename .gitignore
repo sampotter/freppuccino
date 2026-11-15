@@ -431,3 +431,5 @@ FodyWeavers.xsd
 
 # AI panel run logs (transcripts + screenshots, see docs/ai.md)
 ai-runs/
+
+.claude/worktrees/

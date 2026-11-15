@@ -1,9 +1,15 @@
 import { useSyncExternalStore } from 'react'
 import { getHostState, send as sendToHost } from '@/bridge/host'
 import { getApiKey, KEEP_SCREENSHOT_SETS, keySource, loadModel, MAX_STEPS, saveModel, storeApiKey, type KeySource } from './config'
+import { dataUrlExtension, type Attachment } from './images'
 import { ApiError, chatCompletion, type ContentPart, type Message } from './openrouter'
 import { systemPrompt } from './prompt'
 import { runTool, TOOLS } from './tools'
+
+/** Starts the text part in front of user-attached images; such messages are never pruned (see prepareForSend). */
+const REFERENCE_LABEL = '[reference images attached by the user'
+/** Prompt sent when the user attaches images without typing anything. */
+const IMAGE_ONLY_PROMPT = 'Model the object shown in the attached reference image.'
 
 // The agent loop: prompt → model → tool calls (run in Rhino) → results (+ screenshots as images) → model → ... until the
 // model answers without tool calls. The conversation persists across prompts until "New chat".
@@ -11,7 +17,7 @@ import { runTool, TOOLS } from './tools'
 // ── Chat store (what the AI tab renders) ──
 
 export type ChatItem =
-  | { kind: 'user'; id: number; text: string }
+  | { kind: 'user'; id: number; text: string; images?: Attachment[] }
   | { kind: 'assistant'; id: number; text: string }
   | { kind: 'tool'; id: number; name: string; args: string; status: 'running' | 'ok' | 'error'; summary?: string; images?: { view: string; dataUrl: string }[] }
   | { kind: 'info'; id: number; text: string; error?: boolean }
@@ -91,20 +97,32 @@ export function stop() {
   abort?.abort()
 }
 
-export async function sendPrompt(prompt: string) {
+/** Runs one prompt (text and / or reference images) to the end. Resolves to false when nothing was sent (empty, already running, no key). */
+export async function sendPrompt(prompt: string, images: Attachment[] = []): Promise<boolean> {
   prompt = prompt.trim()
-  if (!prompt || state.running) return
+  if ((!prompt && images.length === 0) || state.running) return false
   if (!getApiKey()) {
     push({ kind: 'info', text: 'No OpenRouter key. Paste one with the key button above.', error: true })
-    return
+    return false
   }
 
   const runStart = history.length
   const startedAt = new Date().toISOString()
   const model = state.model
   const usageBefore = state.usage
-  push({ kind: 'user', text: prompt })
-  history.push({ role: 'user', content: prompt })
+  push({ kind: 'user', text: prompt, ...(images.length ? { images } : {}) })
+  const text = prompt || IMAGE_ONLY_PROMPT
+  history.push({
+    role: 'user',
+    content: images.length
+      ? [
+          { type: 'text', text: `${REFERENCE_LABEL}: ${images.map((i) => i.name.replace(/[,[\]]/g, '_')).join(', ')}]` },
+          ...images.map((i): ContentPart => ({ type: 'image_url', image_url: { url: i.dataUrl } })),
+          { type: 'text', text },
+        ]
+      : text,
+  })
+  if (!prompt) prompt = images.length === 1 ? `image: ${images[0].name}` : `${images.length} images`
   abort = new AbortController()
   set({ running: true })
 
@@ -156,6 +174,11 @@ export async function sendPrompt(prompt: string) {
     set({ running: false })
     saveRun(prompt, model, startedAt, outcome, runStart, usageBefore)
   }
+  return true
+}
+
+function isReference(m: Message): boolean {
+  return m.role === 'user' && Array.isArray(m.content) && m.content[0]?.type === 'text' && m.content[0].text.startsWith(REFERENCE_LABEL)
 }
 
 async function complete(model: string, signal: AbortSignal) {
@@ -175,6 +198,7 @@ async function complete(model: string, signal: AbortSignal) {
 /**
  * Per request: drop all but the newest screenshot sets (they dominate the payload), and mark cache breakpoints on the
  * system prompt and the last message (OpenRouter passes cache_control to Anthropic / Gemini; others ignore it).
+ * Reference images the user attached are always kept: the model compares its screenshots against them.
  */
 function prepareForSend(messages: Message[]): Message[] {
   let keep = KEEP_SCREENSHOT_SETS
@@ -182,6 +206,7 @@ function prepareForSend(messages: Message[]): Message[] {
   for (let i = out.length - 1; i >= 0; i--) {
     const m = out[i]
     if (m.role !== 'user' || typeof m.content === 'string' || !m.content.some((p) => p.type === 'image_url')) continue
+    if (isReference(m)) continue
     if (keep-- > 0) continue
     const n = m.content.filter((p) => p.type === 'image_url').length
     out[i] = { role: 'user', content: `[${n} older screenshots removed to save space]` }
@@ -226,7 +251,9 @@ function saveRun(prompt: string, model: string, startedAt: string, outcome: stri
   const images: { name: string; dataUrl: string }[] = []
   const messages = history.slice(runStart).map((m) => {
     if (m.role !== 'user' || typeof m.content === 'string') return m
-    // "[screenshots from capture_views: perspective, front]" names the images that follow
+    // "[screenshots from capture_views: perspective, front]" / "[reference images attached by the user: cup.jpg]"
+    // names the images that follow
+    const reference = isReference(m)
     const label = m.content.find((p) => p.type === 'text')?.text ?? ''
     const views = label.match(/: ([^\]]*)\]/)?.[1].split(', ') ?? []
     let v = 0
@@ -234,8 +261,9 @@ function saveRun(prompt: string, model: string, startedAt: string, outcome: stri
       ...m,
       content: m.content.map((p) => {
         if (p.type !== 'image_url') return p
-        const view = (views[v++] ?? 'image').replace(/[^a-z0-9_]/gi, '')
-        const name = `${String(images.length + 1).padStart(2, '0')}-${view}.png`
+        const raw = views[v++] ?? 'image'
+        const view = reference ? `reference-${raw.replace(/\.[^.]*$/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 30) || 'image'}` : raw.replace(/[^a-z0-9_]/gi, '')
+        const name = `${String(images.length + 1).padStart(2, '0')}-${view}.${dataUrlExtension(p.image_url.url)}`
         images.push({ name, dataUrl: p.image_url.url })
         return { type: 'image_file', file: name }
       }),

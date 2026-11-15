@@ -38,6 +38,10 @@ public static class OperationKind
     public const string Twist = "twist";
     public const string Bend = "bend";
     public const string Repeat = "repeat";
+    /// One child, a Repeat. K fillets every copy (0 = sharp). Not a combine op.
+    public const string Blend = "blend";
+    /// One child, a union, intersection, or difference. K shifts the surface (positive grows). Not a combine op.
+    public const string Offset = "offset";
     /// Modifiers of one child (children[0]); Params only (no Ref).
     public const string Shell = "shell";
     public const string Gyroid = "gyroid";
@@ -66,7 +70,28 @@ public sealed record SceneNode(
     // Primitive (or pipe node: its curve's): SDF.Color "#RRGGBB" (white if the object has none).
     string? Color = null,
     /// <summary>Primitive carries SDF.Linear.*: a scale or shear the parameters cannot express.</summary>
-    bool? Custom = null);
+    bool? Custom = null,
+    /// <summary>sdUser (FFunction) only: code, compile result, params. Params then holds just b.x/b.y/b.z.</summary>
+    UserFnInfo? UserFn = null);
+
+/// <summary>FFunction inspector data (SDF.Code / SDF.L / SDF.u.*), compiled with UserFnCompiler.</summary>
+/// <param name="Hash">Program hash when <paramref name="Ok"/>.</param>
+/// <param name="Params">Declared params in order; Value = SDF.u.&lt;name&gt; or the default. Empty when the code doesn't compile.</param>
+/// <param name="Lipschitz">SDF.L (field = f / L); 1 when missing or invalid.</param>
+/// <param name="Error">Non-code reason the object isn't drawn (invalid SDF.L), or null.</param>
+public sealed record UserFnInfo(
+    string Code,
+    bool Ok,
+    string? Hash,
+    IReadOnlyList<UserFnDiagnosticInfo> Diagnostics,
+    IReadOnlyList<UserFnParamInfo> Params,
+    double Lipschitz,
+    string? Error = null);
+
+/// 1-based line / column.
+public sealed record UserFnDiagnosticInfo(int Line, int Column, string Message);
+
+public sealed record UserFnParamInfo(string Name, double Value, double Default);
 
 public sealed record UiSettings(string Units);
 
@@ -119,6 +144,7 @@ public sealed record SetVisibleRequest(string Id, bool Visible);
 public sealed record RunCommandRequest(string Command);
 
 /// Edit one SDF parameter of a primitive and rebuild its proxy, e.g. { id, name: "s", value: 2 }.
+/// sdUser also takes "L" (Lipschitz, &gt; 0) and "u.&lt;param&gt;" (a declared param, any finite value).
 /// Preview = live drag tick (no undo); the next non-preview edit ends the gesture as one undo step.
 public sealed record SetParamRequest(string Id, string Name, double Value, bool Preview = false);
 
@@ -129,14 +155,21 @@ public sealed record SetColorRequest(string Id, string Color, bool Preview = fal
 /// Style: 0 round, 1 chamfer, 2 stairs (Csg.BlendStyle); Steps: stair count.
 public sealed record ApplyOperationRequest(string[] Operands, string Op, double K, int Style = 0, int Steps = 4);
 
+/// Insert a blend node (k = 0) directly above a Repeat. Its slider fillets the copies.
+public sealed record BlendRepeatRequest(string Id);
+
+/// Insert an offset node (k = 0) directly above a union, intersection, or difference.
+public sealed record OffsetNodeRequest(string Id);
+
 /// Edit an existing operation node. Preview = live drag tick (no undo); the next non-preview edit ends the gesture as one undo step.
 public sealed record SetOperationRequest(string Id, string Op, double K, bool Preview = false);
 
 /// Edit one param of a warp node (FrepOps.ParamNames). Preview semantics as SetOperationRequest.
 public sealed record SetNodeParamRequest(string Id, string Name, double Value, bool Preview = false);
 
-/// Delete operation nodes nothing else uses.
-public sealed record DeleteNodesRequest(string[] Ids);
+/// Delete operation nodes or primitives. Without <see cref="Deep"/>, a node's children take its place.
+/// With <see cref="Deep"/>, the node and every node and primitive under it are removed.
+public sealed record DeleteNodesRequest(string[] Ids, bool Deep = false);
 
 /// AI agent tool call (Ai/AiTools.cs); answered with an AiToolResultMessage carrying the same CallId.
 public sealed record AiToolRequest(string CallId, string Tool, JsonElement? Args = null);

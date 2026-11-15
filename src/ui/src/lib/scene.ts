@@ -22,6 +22,8 @@ export const PRIMITIVES: Record<string, PrimitiveInfo> = {
   sdPyramid: { label: 'Pyramid', icon: 'pyramid', command: 'FPyramid', params: { s: 'Base side', h: 'Height' } },
   sdEllipsoid: { label: 'Ellipsoid', icon: 'ellipsoid', command: 'FEllipsoid', params: { 'r.x': 'Semi-axis X', 'r.y': 'Semi-axis Y', 'r.z': 'Semi-axis Z' } },
   sdTorus: { label: 'Torus', icon: 'torus', command: 'FTorus', params: { 't.x': 'Major radius', 't.y': 'Tube radius' } },
+  // FFunction: user SDF code inside a box; L and the code's params come in node.userFn.
+  sdUser: { label: 'Function', icon: 'function', command: 'FFunction', params: { 'b.x': 'Half X', 'b.y': 'Half Y', 'b.z': 'Half Z' } },
 }
 
 export const OPERATIONS: Record<OperationKind, { label: string; icon: BrandIconName }> = {
@@ -65,11 +67,15 @@ export function isDeform(op: SceneNode['op']): op is DeformKind {
 }
 
 export function nodeIconName(node: SceneNode): BrandIconName | undefined {
+  if (node.op === 'blend') return 'blend'
+  if (node.op === 'offset') return 'offset'
   if (node.kind === 'operation') return !node.op ? undefined : isDeform(node.op) ? DEFORMS[node.op].icon : OPERATIONS[node.op].icon
   return node.sdfType ? PRIMITIVES[node.sdfType]?.icon : undefined
 }
 
 export function typeLabel(node: SceneNode): string {
+  if (node.op === 'blend') return 'Blend'
+  if (node.op === 'offset') return 'Offset'
   if (node.kind === 'operation') return !node.op ? 'Operation' : isDeform(node.op) ? DEFORMS[node.op].label : OPERATIONS[node.op].label
   return (node.sdfType && PRIMITIVES[node.sdfType]?.label) || node.sdfType || 'Primitive'
 }

@@ -37,7 +37,7 @@
     <UiBuildOutput Condition="'$(Configuration)' == 'Release'">$(UiDist).always-rebuild</UiBuildOutput>
   </PropertyGroup>
   <ItemGroup>
-    <UiSources Include="$(UiDir)src/**/*;$(UiDir)index.html;$(UiDir)package.json;$(UiDir)package-lock.json;$(UiDir)vite.config.ts;$(UiDir)tsconfig*.json;$(UiDir)components.json;$(UiDir).env*" />
+    <UiSources Include="$(UiDir)src/**/*;$(UiDir)index.html;$(UiDir)package.json;$(UiDir)package-lock.json;$(UiDir)vite.config.ts;$(UiDir)tsconfig*.json;$(UiDir)components.json;$(UiDir).env*;$(MSBuildProjectDirectory)/../../.claude/skills/freppuccino-*/SKILL.md" />
   </ItemGroup>
   <Target Name="BuildUi" BeforeTargets="Build" Condition="'$(SkipUiBuild)' != 'true'" Inputs="@(UiSources)" Outputs="$(UiBuildOutput)">
     <Exec Command="npm ci" WorkingDirectory="$(UiDir)" Condition="!Exists('$(UiDir)node_modules')" ContinueOnError="WarnAndContinue" />
@@ -54,6 +54,10 @@
 
   <ItemGroup>
     <EmbeddedResource Include="EmbeddedResources/**/*" />
+    <!-- FFunction guide, single source for: external Claude Code (skill), the panel agent (src/ui/src/ai/skills.ts), AiTools help. -->
+    <EmbeddedResource Include="$(MSBuildProjectDirectory)/../../.claude/skills/freppuccino-ffunction/SKILL.md" LogicalName="Freppuccino.ffunction.md" />
+    <None Include="EmbeddedResources/plugin-freppuccino.ico" Link="icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Freppuccino.rui" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- THROWAWAY hack kept for reference, not compiled -->

@@ -60,12 +60,23 @@ public static class SdfTransformWatcher
             var xform = e.Transform;
             if (xform.IsIdentity) return;
 
+            // Blend carriers first: their roots' matrices take the transform, and leaves Rhino moves along with them keep
+            // their canonical values.
+            var doc0 = e.Objects.FirstOrDefault(o => o?.Document != null)?.Document;
+            var skip = doc0 == null ? new HashSet<Guid>() : Freppuccino.Selection.FrepCarriers.OnBeforeTransform(doc0, e.Objects, xform, e.ObjectsWillBeCopied);
+
             foreach (var obj in e.Objects)
             {
-                if (obj?.Document == null || SdfUserText.ReadType(obj.Attributes) == null) continue;
+                if (obj?.Document == null || SdfUserText.ReadType(obj.Attributes) == null || skip.Contains(obj.Id)) continue;
+
+                // A leaf under transformed roots sits at T × canonical (T: its picked or primary instance's root
+                // transforms), so a world transform X is T⁻¹ X T on its canonical values.
+                var local = xform;
+                if (Freppuccino.Selection.FrepSelection.InstanceOf(obj.Document, obj.Id) is { } inst && !inst.T.IsIdentity && inst.T.TryGetInverse(out var ti))
+                    local = ti * xform * inst.T;
 
                 var updated = obj.Attributes.Duplicate();
-                if (!SdfTransforms.TryApply(updated, xform, out var reason))
+                if (!SdfTransforms.TryApply(updated, local, out var reason))
                 {
                     RhinoApp.WriteLine($"Freppuccino: {Describe(obj)} – F-rep values not updated: {reason}.");
                     continue;

@@ -8,4 +8,6 @@ namespace Freppuccino.Shaders;
 public sealed record ShaderSource(string Vertex, string Fragment, uint VertexCount = 3)
 {
     public string Hash { get; } = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(Vertex + "\0" + Fragment)));
+    /// Uniform data layout id (FrepShaderGen); programs with the same non-empty Layout can draw each other's uniforms.
+    public string Layout { get; init; } = "";
 }

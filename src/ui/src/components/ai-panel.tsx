@@ -1,9 +1,10 @@
-import { ArrowUp, BookOpen, Camera, CircleAlert, KeyRound, Loader2, Plus, Square, Wrench, X } from 'lucide-react'
+import { ArrowUp, BookOpen, Camera, CircleAlert, ImagePlus, KeyRound, Loader2, Plus, Square, Wrench, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { newChat, sendPrompt, setApiKey, setModel, stop, useChat, type ChatItem } from '@/ai/agent'
 import { MODEL_PRESETS } from '@/ai/config'
+import { isImageFile, MAX_ATTACHMENTS, readImageFile, type Attachment } from '@/ai/images'
 import { useHost } from '@/bridge/host'
 import { cn } from '@/lib/utils'
 
@@ -17,8 +18,13 @@ export function AiPanel() {
   const keySource = useChat((s) => s.keySource)
   const [keyOpen, setKeyOpen] = useState(false)
   const [draft, setDraft] = useState('')
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachError, setAttachError] = useState('')
+  const [loadingImages, setLoadingImages] = useState(0)
+  const [dragging, setDragging] = useState(false)
   const [zoomed, setZoomed] = useState<{ view: string; dataUrl: string } | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
 
   // Follow new messages unless the user scrolled up to read.
   const stick = useRef(true)
@@ -27,15 +33,62 @@ export function AiPanel() {
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [items])
 
-  const submit = (text = draft) => {
-    if (!text.trim() || running) return
-    setDraft('')
+  const canSend = (draft.trim() !== '' || attachments.length > 0) && loadingImages === 0
+
+  const submit = (text = draft, images = attachments) => {
+    if ((!text.trim() && images.length === 0) || running || loadingImages > 0) return
     stick.current = true
-    void sendPrompt(text)
+    // Without a key nothing is sent: keep the draft so it isn't lost.
+    if (keySource !== 'none') {
+      setDraft('')
+      setAttachments([])
+      setAttachError('')
+    }
+    void sendPrompt(text, images)
+  }
+
+  /** Reads image files (picker, paste, drop) into attachments, up to MAX_ATTACHMENTS. */
+  const addFiles = async (files: File[]) => {
+    const images = files.filter(isImageFile)
+    if (images.length === 0) {
+      if (files.length) setAttachError('Only image files can be attached.')
+      return
+    }
+    const room = MAX_ATTACHMENTS - attachments.length - loadingImages
+    if (room <= 0) {
+      setAttachError(`Up to ${MAX_ATTACHMENTS} images per message.`)
+      return
+    }
+    const take = images.slice(0, room)
+    setAttachError(images.length > room ? `Up to ${MAX_ATTACHMENTS} images per message.` : '')
+    setLoadingImages((n) => n + take.length)
+    const results = await Promise.allSettled(take.map(readImageFile))
+    setLoadingImages((n) => n - take.length)
+    const ok = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    const failed = results.flatMap((r) => (r.status === 'rejected' ? [(r.reason as Error).message] : []))
+    if (ok.length) setAttachments((a) => [...a, ...ok].slice(0, MAX_ATTACHMENTS))
+    if (failed.length) setAttachError(`Could not attach: ${failed.join('; ')}`)
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+        setDragging(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        setDragging(false)
+        void addFiles(Array.from(e.dataTransfer.files))
+      }}
+    >
       <Toolbar keyOpen={keyOpen} onToggleKey={() => setKeyOpen((o) => !o)} />
       {(keyOpen || keySource === 'none') && <KeyForm onSaved={() => setKeyOpen(false)} />}
       <div
@@ -63,34 +116,95 @@ export function AiPanel() {
       </div>
 
       <form
-        className="flex shrink-0 items-end gap-2 border-t bg-card p-3"
+        className={cn('grid shrink-0 gap-2 border-t bg-card p-3', dragging && 'bg-accent ring-2 ring-ring ring-inset')}
         onSubmit={(e) => {
           e.preventDefault()
           submit()
         }}
       >
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          rows={2}
-          placeholder={running ? 'Working…' : 'Describe something to build…'}
-          className="max-h-40 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        />
-        {running ? (
-          <Button type="button" variant="outline" size="icon" aria-label="Stop" title="Stop" onClick={stop}>
-            <Square className="fill-current" />
-          </Button>
-        ) : (
-          <Button type="submit" size="icon" aria-label="Send" title="Send (Enter)" disabled={!draft.trim()}>
-            <ArrowUp />
-          </Button>
+        {(attachments.length > 0 || loadingImages > 0) && (
+          <div className="flex flex-wrap gap-1.5">
+            {attachments.map((a, i) => (
+              <div key={`${i}-${a.name}`} className="relative size-14 overflow-hidden rounded-md border">
+                <button type="button" className="block size-full" title={a.name} onClick={() => setZoomed({ view: a.name, dataUrl: a.dataUrl })}>
+                  <img src={a.dataUrl} alt={a.name} className="size-full object-cover" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove ${a.name}`}
+                  title="Remove"
+                  className="absolute top-0.5 right-0.5 rounded-full bg-background/90 p-0.5 hover:bg-accent"
+                  onClick={() => setAttachments((list) => list.filter((_, j) => j !== i))}
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+            {Array.from({ length: loadingImages }, (_, i) => (
+              <div key={`loading-${i}`} className="flex size-14 items-center justify-center rounded-md border text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+              </div>
+            ))}
+          </div>
         )}
+        {attachError && (
+          <div className="type-small flex items-start gap-1.5 text-destructive">
+            <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+            <span>{attachError}</span>
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              void addFiles(Array.from(e.target.files ?? []))
+              e.target.value = '' // picking the same file again still fires onChange
+            }}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Attach reference image"
+            title={`Attach reference images (or paste / drop them), up to ${MAX_ATTACHMENTS}`}
+            disabled={attachments.length + loadingImages >= MAX_ATTACHMENTS}
+            onClick={() => fileInput.current?.click()}
+          >
+            <ImagePlus />
+          </Button>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData.files).filter(isImageFile)
+              if (files.length === 0) return // plain text paste
+              e.preventDefault()
+              void addFiles(files)
+            }}
+            rows={2}
+            placeholder={running ? 'Working…' : attachments.length ? 'Describe what to build from the image (optional)…' : 'Describe something to build, or attach an image…'}
+            className="max-h-40 min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          {running ? (
+            <Button type="button" variant="outline" size="icon" aria-label="Stop" title="Stop" onClick={stop}>
+              <Square className="fill-current" />
+            </Button>
+          ) : (
+            <Button type="submit" size="icon" aria-label="Send" title="Send (Enter)" disabled={!canSend}>
+              <ArrowUp />
+            </Button>
+          )}
+        </div>
       </form>
 
       {zoomed && (
@@ -233,6 +347,9 @@ function Empty(props: { onPick: (text: string) => void; mock: boolean }) {
         Describe an object and the assistant builds it from F-rep primitives and CSG, then checks screenshots and fixes what looks
         wrong. Each step is undoable in Rhino.
       </p>
+      <p className="type-small text-muted-foreground">
+        To model from a photo or sketch, attach it with the image button, or paste / drop it onto the panel.
+      </p>
       {props.mock && (
         <p className="type-small text-muted-foreground">Mock host: no geometry or screenshots, but the tool loop runs.</p>
       )}
@@ -251,7 +368,26 @@ function Item(props: { item: ChatItem; onZoom: (img: { view: string; dataUrl: st
   const it = props.item
   switch (it.kind) {
     case 'user':
-      return <div className="ml-6 justify-self-end rounded-lg bg-secondary px-3 py-2 whitespace-pre-wrap text-secondary-foreground">{it.text}</div>
+      return (
+        <div className="ml-6 grid gap-1.5 justify-self-end rounded-lg bg-secondary px-3 py-2 whitespace-pre-wrap text-secondary-foreground">
+          {it.images && it.images.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {it.images.map((img, i) => (
+                <button
+                  key={`${i}-${img.name}`}
+                  type="button"
+                  title={img.name}
+                  onClick={() => props.onZoom({ view: img.name, dataUrl: img.dataUrl })}
+                  className="overflow-hidden rounded-md border"
+                >
+                  <img src={img.dataUrl} alt={img.name} className="block max-h-28 max-w-40 object-contain" />
+                </button>
+              ))}
+            </div>
+          )}
+          {it.text && <span>{it.text}</span>}
+        </div>
+      )
     case 'assistant':
       return <div className="px-1 whitespace-pre-wrap">{it.text}</div>
     case 'info':

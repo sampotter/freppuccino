@@ -1,22 +1,20 @@
 using System.Runtime.InteropServices;
+using Freppuccino.Ui;
 using Rhino;
 using Rhino.Commands;
-using Rhino.Display;
+using Rhino.UI;
 
 namespace Freppuccino.Commands;
 
-[Guid("cd49539f-80ff-4035-9e57-4fbc6c6d3fb7")]
-public class FreppuccinoCommand : Command
+/// Opens the Freppuccino side panel.
+[Guid("a2d84e6f-3b19-4c57-8e0d-7f41b9c26e15")]
+public class FrepPanelCommand : Command
 {
     public override string EnglishName => "Freppuccino";
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
-        var view = doc.Views.ActiveView;
-        var dm = DisplayModeDescription.GetDisplayMode(Display.FreppuccinoDisplayMode.Id);
-        if (view == null || dm == null) return Result.Failure;
-        view.ActiveViewport.DisplayMode = dm;
-        view.Redraw();
+        Panels.OpenPanel(typeof(FrepPanel).GUID);
         return Result.Success;
     }
 }

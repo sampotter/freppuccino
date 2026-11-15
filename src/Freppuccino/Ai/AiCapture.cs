@@ -14,8 +14,31 @@ namespace Freppuccino.Ai;
 /// </summary>
 public static class AiCapture
 {
-    /// True while capturing; the shader conduit skips its "FREP MODE" badge then.
-    public static bool Active { get; private set; }
+    /// True while capturing (an AI screenshot, or a <see cref="CleanCapture"/> scope): the shader conduit then draws
+    /// just the model, without its "FREP MODE" badge or the control outlines.
+    public static bool Active => cleanDepth > 0;
+    static int cleanDepth;
+
+    /// <summary>
+    /// For code that captures views itself (e.g. the sizzle-reel capture scripts, through reflection): while the returned
+    /// scope is alive, captures show just the model, like the AI's screenshots. Nestable; dispose it to end.
+    /// </summary>
+    public static IDisposable CleanCapture()
+    {
+        cleanDepth++;
+        return new CleanScope();
+    }
+
+    sealed class CleanScope : IDisposable
+    {
+        bool disposed;
+        public void Dispose()
+        {
+            if (disposed) return;
+            disposed = true;
+            cleanDepth--;
+        }
+    }
 
     /// Camera direction (from target toward the camera) for the named views; null = Rhino's defined projection.
     static readonly Dictionary<string, (DefinedViewportProjection Projection, Vector3d? Direction)> Views = new(StringComparer.OrdinalIgnoreCase)
@@ -49,7 +72,7 @@ public static class AiCapture
         var vp = view.ActiveViewport;
         var images = new List<string>(views.Count);
         vp.PushViewProjection();
-        Active = true;
+        var clean = CleanCapture();
         try
         {
             foreach (var name in views)
@@ -64,7 +87,7 @@ public static class AiCapture
         }
         finally
         {
-            Active = false;
+            clean.Dispose(); // before the redraw, so the user's view gets its badge and outlines back
             vp.PopViewProjection();
             view.Redraw();
         }

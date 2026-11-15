@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Freppuccino/Freppuccino.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/UserFn.Tests/UserFn.Tests.csproj" />
+  </Folder>
 </Solution>

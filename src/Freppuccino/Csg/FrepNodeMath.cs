@@ -67,12 +67,30 @@ public static class FrepNodeMath
     public const int PipeRows = 1 + PipePoints;
 
     /// Live Pipe: visible node whose ref is an undeleted curve (hidden curves count).
-    public static bool TryResolve(RhinoDoc doc, FrepNode n, out RhinoObject? obj, out Curve curve)
+    public static bool TryResolve(RhinoDoc doc, FrepNode n, out RhinoObject? obj, out Curve curve) =>
+        TryResolve(doc, n, out obj, out curve, out _);
+
+    /// <paramref name="curve"/> in canonical space: the real curve mapped by A⁻¹, A = the root transforms applied to it
+    /// (<see cref="Placement.AppliedKey"/>, as for warp references). <paramref name="applied"/>: A (identity if none).
+    public static bool TryResolve(RhinoDoc doc, FrepNode n, out RhinoObject? obj, out Curve curve, out Transform applied)
     {
         obj = null;
         curve = null!;
+        applied = Transform.Identity;
         if (n.Op != FrepOp.Pipe || n.Hidden || doc.Objects.FindId(n.Ref) is not { IsDeleted: false } o) return false;
-        if (!FrepRefs.TryCurve(o.Geometry, out curve)) return false;
+        GeometryBase g = o.Geometry;
+        switch (Placement.ReadApplied(o.Attributes, out var a))
+        {
+            case Placement.Stored.Invalid:
+                return false; // unreadable: treated like a missing curve, never as unmoved geometry
+            case Placement.Stored.Valid:
+                if (!a.TryGetInverse(out var inv)) return false;
+                applied = a;
+                g = g.Duplicate();
+                if (!g.Transform(inv)) return false;
+                break;
+        }
+        if (!FrepRefs.TryCurve(g, out curve)) return false;
         obj = o;
         return true;
     }

@@ -24,11 +24,23 @@ public sealed class UiController : IDisposable
     static readonly HashSet<string> AllowedCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "FBox", "FSphere", "FCylinder", "FCone", "FPyramid", "FEllipsoid", "FTorus",
-        "FTwist", "FBend", "FRepeat", "FShell", "FGyroid", "FPipe", "Freppuccino",
+        "FFunction", "FTwist", "FBend", "FRepeat", "FShell", "FGyroid", "FPipe", "Freppuccino",
     };
 
     /// Selected operation nodes per doc (runtime serial), in pick order.
     static readonly Dictionary<uint, List<int>> selectedNodes = [];
+
+    /// Replace the panel selection with one operation node and show the gumball on its leaves.
+    public static void SelectNode(RhinoDoc doc, int id)
+    {
+        doc.Objects.UnselectAll();
+        ClearNodes(doc);
+        NodesOf(doc).Add(id);
+        var tree = FrepTrees.Get(doc);
+        if (tree.Find(id) is { } node) SelectLeaves(doc, tree, node.Id, true);
+        ShowGumball();
+        NodeSelectionChanged?.Invoke();
+    }
 
     /// Selected node ids; clears them (consumed like Rhino preselection by FUnion/FIntersect).
     public static IReadOnlyList<int> TakeSelectedNodes(RhinoDoc doc)
@@ -38,6 +50,20 @@ public sealed class UiController : IDisposable
         return ids;
     }
 
+    /// Selected node ids (panel order), without consuming them.
+    public static IReadOnlyList<int> SelectedNodes(RhinoDoc doc) => selectedNodes.GetValueOrDefault(doc.RuntimeSerialNumber, []);
+
+    /// Writes the panel's node selection (FrepSelection is the caller for scene clicks).
+    public static void SetSelectedNodes(RhinoDoc doc, IEnumerable<int> ids)
+    {
+        var list = NodesOf(doc);
+        var next = ids.Distinct().ToList();
+        if (list.SequenceEqual(next)) return;
+        list.Clear();
+        list.AddRange(next);
+        NodeSelectionChanged?.Invoke();
+    }
+
     static event Action? NodeSelectionChanged;
 
     static List<int> NodesOf(RhinoDoc doc) =>
@@ -45,6 +71,9 @@ public sealed class UiController : IDisposable
 
     readonly WebViewHost web;
     bool sceneDirty, selectionDirty;
+    int pruning;
+    /// Set by ReplaceRhinoObject. The delete that follows is the old object making way for its replacement, not a removal.
+    Guid? replaceOldId;
     uint sentDocSerial;
     /// Open slider drag: the primitive as it was before the first preview tick. One undo step on release.
     ParamEdit? paramEdit;
@@ -58,7 +87,7 @@ public sealed class UiController : IDisposable
         RhinoDoc.DeselectObjects += OnSelectionChanged;
         RhinoDoc.DeselectAllObjects += OnDeselectAll;
         RhinoDoc.AddRhinoObject += OnObjectChanged;
-        RhinoDoc.DeleteRhinoObject += OnObjectChanged;
+        RhinoDoc.DeleteRhinoObject += OnRhinoDeleted;
         RhinoDoc.UndeleteRhinoObject += OnObjectChanged;
         RhinoDoc.ReplaceRhinoObject += OnReplaceObject;
         RhinoDoc.ModifyObjectAttributes += OnModifyAttributes;
@@ -76,7 +105,7 @@ public sealed class UiController : IDisposable
         RhinoDoc.DeselectObjects -= OnSelectionChanged;
         RhinoDoc.DeselectAllObjects -= OnDeselectAll;
         RhinoDoc.AddRhinoObject -= OnObjectChanged;
-        RhinoDoc.DeleteRhinoObject -= OnObjectChanged;
+        RhinoDoc.DeleteRhinoObject -= OnRhinoDeleted;
         RhinoDoc.UndeleteRhinoObject -= OnObjectChanged;
         RhinoDoc.ReplaceRhinoObject -= OnReplaceObject;
         RhinoDoc.ModifyObjectAttributes -= OnModifyAttributes;
@@ -93,8 +122,43 @@ public sealed class UiController : IDisposable
     // ─────────────── Rhino → page ───────────────
 
     void OnSelectionChanged(object? sender, RhinoObjectSelectionEventArgs e) => selectionDirty = true;
-    void OnObjectChanged(object? sender, RhinoObjectEventArgs e) => sceneDirty = selectionDirty = true;
-    void OnReplaceObject(object? sender, RhinoReplaceObjectEventArgs e) => sceneDirty = true;
+
+    void OnObjectChanged(object? sender, RhinoObjectEventArgs e)
+    {
+        sceneDirty = selectionDirty = true;
+        // The add or undelete that finishes a replace. Undo restores the tree itself.
+        if (replaceOldId is not Guid old) return;
+        replaceOldId = null;
+        if (e.TheObject is not { } obj || obj.Id == Guid.Empty || obj.Id == old) return;
+        var doc = obj.Document ?? RhinoDoc.ActiveDoc;
+        if (doc == null || doc.UndoActive || doc.RedoActive) return;
+        var tree = FrepTrees.Get(doc);
+        var next = tree.Retarget(old, obj.Id);
+        if (!ReferenceEquals(next, tree)) FrepTrees.Set(doc, next, "Transform");
+    }
+
+    /// A viewport delete joins this tree edit to the same undo record. Our own delete already excised the id.
+    void OnRhinoDeleted(object? sender, RhinoObjectEventArgs e)
+    {
+        sceneDirty = selectionDirty = true;
+        if (e.TheObject is not { } obj) return;
+        var doc = obj.Document ?? RhinoDoc.ActiveDoc;
+        if (doc == null) return;
+        // Move, rotate, and scale replace the object: this delete is followed by an add. Folding the
+        // union here drops the node before the replacement exists.
+        if (replaceOldId is Guid replacing && replacing == obj.Id) return;
+        replaceOldId = null;
+        PruneObjects(doc, [obj.Id]);
+        // Panel deletes redraw once, after every object is gone. A viewport delete has to redraw here:
+        // the scene is already dirty, but nothing else asks the view to paint.
+        if (pruning == 0) doc.Views.Redraw();
+    }
+
+    void OnReplaceObject(object? sender, RhinoReplaceObjectEventArgs e)
+    {
+        sceneDirty = true;
+        replaceOldId = e.ObjectId;
+    }
     void OnModifyAttributes(object? sender, RhinoModifyObjectAttributesEventArgs e) => sceneDirty = true;
     void OnNodeSelectionChanged() => selectionDirty = true;
 
@@ -128,6 +192,8 @@ public sealed class UiController : IDisposable
     {
         var doc = RhinoDoc.ActiveDoc;
         if (doc == null) return;
+        // A replace that never got its add must not retarget whatever object shows up next.
+        replaceOldId = null;
 
         if (doc.RuntimeSerialNumber != sentDocSerial)
         {
@@ -136,6 +202,7 @@ public sealed class UiController : IDisposable
         }
         if (sceneDirty)
         {
+            PruneDangling(doc);
             sceneDirty = false;
             web.Send(new SceneMessage(BuildScene(doc)));
         }
@@ -151,6 +218,7 @@ public sealed class UiController : IDisposable
         FrepTrees.CommitAll(); // page reload / doc switch mid-drag
         CommitColor();
         EndParamGesture(doc);
+        PruneDangling(doc);
         sentDocSerial = doc.RuntimeSerialNumber;
         sceneDirty = selectionDirty = false;
         var theme = Rhino.Runtime.HostUtils.RunningInDarkMode ? "dark" : "light";
@@ -184,6 +252,8 @@ public sealed class UiController : IDisposable
         FrepOp.Twist => OperationKind.Twist,
         FrepOp.Bend => OperationKind.Bend,
         FrepOp.Repeat => OperationKind.Repeat,
+        FrepOp.Blend => OperationKind.Blend,
+        FrepOp.Offset => OperationKind.Offset,
         FrepOp.Shell => OperationKind.Shell,
         FrepOp.Gyroid => OperationKind.Gyroid,
         FrepOp.Pipe => OperationKind.Pipe,
@@ -211,7 +281,7 @@ public sealed class UiController : IDisposable
             var children = n.Operands.Select(o => o.IsNode
                 ? (tree.Find(o.NodeId) is { } child ? Node(child) : Missing(NodeKey(o.NodeId)))
                 : Primitive(doc, o.ObjectId)).ToList();
-            if (!n.Op.IsCsg())
+            if (n.Op.IsWarp() || n.Op.IsModifier() || n.Op == FrepOp.Pipe)
             {
                 // Warps / modifiers / pipes: their params by name; a ref (line / box / curve) for warps and pipes.
                 var names = n.Op.ParamNames();
@@ -219,14 +289,18 @@ public sealed class UiController : IDisposable
                 return built[n.Id] = new SceneNode(
                     Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
                     Op: ToKind(n.Op), Params: names.Select((name, i) => (name, i)).ToDictionary(x => x.name, x => n.Param(x.i)),
+                    K: null,
                     Children: children, Ref: n.Op.HasRef() ? ObjectKey(n.Ref) : null, RefMissing: n.Op.HasRef() && r == null ? true : null,
                     // A pipe is drawn in its curve's SDF.Color.
                     Color: n.Op == FrepOp.Pipe && r != null ? SdfUserText.FormatColor(SdfUserText.ReadColorOrDefault(r.Attributes)) : null);
             }
+            // Blend / Offset: just K. CSG: K and its blend style.
             return built[n.Id] = new SceneNode(
                 Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
                 Op: ToKind(n.Op), K: n.K, Children: children,
-                Params: new Dictionary<string, double> { ["style"] = (int)n.Style(), ["steps"] = n.ParamCount >= 2 ? n.Steps() : 4 });
+                Params: n.Op.IsCsg()
+                    ? new Dictionary<string, double> { ["style"] = (int)n.Style(), ["steps"] = n.ParamCount >= 2 ? n.Steps() : 4 }
+                    : null);
         }
 
         var roots = tree.Nodes.Where(n => !tree.IsReferenced(FrepOperand.Node(n.Id))).Select(Node).ToList();
@@ -256,16 +330,28 @@ public sealed class UiController : IDisposable
     static SceneNode Primitive(RhinoDoc doc, RhinoObject obj)
     {
         var attributes = obj.Attributes;
+        var type = SdfUserText.ReadType(attributes);
+        var parameters = ReadParams(attributes);
+        UserFnInfo? userFn = null;
+        if (UserFnView.IsUser(type))
+        {
+            // L and u.* travel in UserFn (with defaults filled in); Params keeps the box half-extents.
+            parameters.Remove(UserFnView.LipschitzName);
+            foreach (var key in parameters.Keys.Where(k => k.StartsWith(UserFnView.ParamPrefix, StringComparison.Ordinal)).ToList())
+                parameters.Remove(key);
+            userFn = UserFnView.Read(attributes);
+        }
         return new SceneNode(
             Id: ObjectKey(obj.Id),
             Kind: SceneNodeKind.Primitive,
             Name: string.IsNullOrEmpty(attributes.Name) ? null : attributes.Name,
             Visible: !obj.IsHidden,
             Locked: obj.IsLocked,
-            SdfType: SdfUserText.ReadType(attributes),
-            Params: ReadParams(attributes),
+            SdfType: type,
+            Params: parameters,
             Color: SdfUserText.FormatColor(SdfUserText.ReadColorOrDefault(attributes)),
-            Custom: SdfUserText.TryReadLinear(attributes, out _, out _, out _) ? true : null);
+            Custom: SdfUserText.TryReadLinear(attributes, out _, out _, out _) ? true : null,
+            UserFn: userFn);
     }
 
     static readonly HashSet<string> HeaderKeys = new(StringComparer.Ordinal)
@@ -293,10 +379,14 @@ public sealed class UiController : IDisposable
     {
         // Leaves selected only so the gumball can sit on a node's geometry stay out of the panel selection.
         var gumball = NodeLeaves(doc);
-        return doc.Objects.GetSelectedObjects(false, false)
+        var selected = doc.Objects.GetSelectedObjects(false, false).ToList();
+        return selected
             .Where(o => SdfUserText.ReadType(o.Attributes) != null && !gumball.Contains(o.Id))
             .Select(o => ObjectKey(o.Id))
+            // A shared shape picked through another blend's copy is selected via its instance carrier: its row too.
+            .Concat(selected.Select(o => Selection.FrepCarriers.InstanceOf(doc, o)).OfType<Selection.FrepInstance>().Select(i => ObjectKey(i.Object)))
             .Concat(selectedNodes.GetValueOrDefault(doc.RuntimeSerialNumber, []).Select(NodeKey))
+            .Distinct()
             .ToList();
     }
 
@@ -358,6 +448,12 @@ public sealed class UiController : IDisposable
                 case "applyOperation":
                     ApplyOperation(doc, Parse<ApplyOperationRequest>(message));
                     break;
+                case "blendRepeat":
+                    BlendRepeat(doc, Parse<BlendRepeatRequest>(message));
+                    break;
+                case "offsetNode":
+                    OffsetNode(doc, Parse<OffsetNodeRequest>(message));
+                    break;
                 case "setOperation":
                     SetOperation(doc, Parse<SetOperationRequest>(message));
                     break;
@@ -405,13 +501,15 @@ public sealed class UiController : IDisposable
             ClearNodes(doc); // OnDeselectAll doesn't fire if no Rhino object was selected
         }
         var nodes = NodesOf(doc);
+        var rootSet = Selection.FrepSelection.Structure(doc).Roots.ToHashSet();
         foreach (var n in nodeIds)
         {
             bool select = request.Mode != "toggle" || !nodes.Contains(n);
             nodes.Remove(n);
             if (select) nodes.Add(n);
-            // Select the node's primitives so Rhino draws the gumball on that geometry.
-            SelectLeaves(doc, tree, n, select);
+            // An inner node: select its primitives so Rhino draws the gumball on that geometry (each moves as a leaf).
+            // A root: its blend carrier below, so the gumball transforms the whole blend.
+            if (!rootSet.Contains(FrepOperand.Node(n))) SelectLeaves(doc, tree, n, select);
         }
         foreach (var key in request.Ids)
         {
@@ -420,7 +518,14 @@ public sealed class UiController : IDisposable
             bool select = request.Mode != "toggle" || obj.IsSelected(false) == 0;
             obj.Select(select);
         }
+        // A root row selects that blend in the scene too: its carrier, which carries the gumball.
+        foreach (var n in nodeIds.ToList())
+        {
+            if (!rootSet.Contains(FrepOperand.Node(n)) || Selection.FrepCarriers.Ensure(doc, n) is not { } carrier) continue;
+            carrier.Select(NodesOf(doc).Contains(n), true);
+        }
         ShowGumball();
+        Selection.FrepSelection.RefreshGumball(); // a selection made from code shows no gumball until refreshed
         NodeSelectionChanged?.Invoke();
         doc.Views.Redraw();
     }
@@ -499,7 +604,8 @@ public sealed class UiController : IDisposable
                     brep.Dispose();
                     return;
                 }
-                SdfUserText.TryReadFloat(obj.Attributes, request.Name, out var original);
+                // Missing key (FFunction param at its default): NaN, so release always records the step.
+                var original = SdfUserText.TryReadFloat(obj.Attributes, request.Name, out var v) ? v : double.NaN;
                 paramEdit = new ParamEdit(id, request.Name, original, geometry.DuplicateBrep(), obj.Attributes.Duplicate());
             }
             // Live ticks stay out of the undo stack; release records the whole drag.
@@ -600,12 +706,53 @@ public sealed class UiController : IDisposable
         doc.Views.Redraw();
     }
 
+    static void BlendRepeat(RhinoDoc doc, BlendRepeatRequest request)
+    {
+        var tree = FrepTrees.Get(doc);
+        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { Op: FrepOp.Repeat }) return;
+        var (next, blend) = tree.BlendOver(id);
+        FrepTrees.Set(doc, next, "Blend repeat");
+        doc.Objects.UnselectAll();
+        SelectNode(doc, blend.Id);
+        doc.Views.Redraw();
+    }
+
+    static void OffsetNode(RhinoDoc doc, OffsetNodeRequest request)
+    {
+        var tree = FrepTrees.Get(doc);
+        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node) return;
+        if (node.Op is not (FrepOp.Union or FrepOp.Intersect or FrepOp.Difference)) return;
+        var (next, offset) = tree.WrapOver(FrepOp.Offset, 0, id);
+        FrepTrees.Set(doc, next, "Offset");
+        doc.Objects.UnselectAll();
+        SelectNode(doc, offset.Id);
+        doc.Views.Redraw();
+    }
+
     static void SetOperation(RhinoDoc doc, SetOperationRequest request)
     {
-        if (ParseKind(request.Op) is not { } op) throw new JsonException($"unknown op '{request.Op}'");
         var tree = FrepTrees.Get(doc);
-        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node || !node.Op.IsCsg()) return;
+        if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node) return;
+        // Warps, shells, gyroids and pipes have no k; their edits go through SetNodeParam.
+        if (!node.Op.IsCsg() && node.Op is not (FrepOp.Blend or FrepOp.Offset)) return;
+        if (node.Op == FrepOp.Offset)
+        {
+            if (request.Op != OperationKind.Offset || !double.IsFinite(request.K)) return;
+            if (node.K != request.K) FrepTrees.Preview(doc, tree.WithK(id, request.K), $"Edit {node.Name}");
+            if (!request.Preview) FrepTrees.Commit(doc);
+            return;
+        }
         var k = Math.Max(0, request.K);
+        if (node.Op == FrepOp.Blend)
+        {
+            // The slider only changes this node's fillet. It is not a union/subtract/intersect.
+            if (request.Op != OperationKind.Blend) return;
+            if (node.K != k) FrepTrees.Preview(doc, tree.WithK(id, k), $"Edit {node.Name}");
+            if (!request.Preview) FrepTrees.Commit(doc);
+            return;
+        }
+        if (ParseKind(request.Op) is not { } op) throw new JsonException($"unknown op '{request.Op}'");
+        if (node.Op.IsWarp()) return;
         // Previews apply live; the final message records the whole gesture as one undo step.
         if (node.Op != op || node.K != k) FrepTrees.Preview(doc, tree.WithOp(id, op, k), $"Edit {node.Name}");
         if (!request.Preview) FrepTrees.Commit(doc);
@@ -687,27 +834,98 @@ public sealed class UiController : IDisposable
         doc.Views.Redraw();
     }
 
-    /// Deletes nodes that nothing else references (nodes being deleted together count as going away).
+    /// Deletes the nodes and primitives in the request, then folds parents that no longer have enough children.
     void DeleteNodes(RhinoDoc doc, DeleteNodesRequest request)
     {
         var tree = FrepTrees.Get(doc);
-        var pending = Nodes(tree, request.Ids).ToHashSet();
-        bool removed;
-        do
+        var dropNodes = new HashSet<int>();
+        var dropObjects = new HashSet<Guid>();
+        foreach (var key in request.Ids)
         {
-            removed = false;
-            foreach (var id in pending.ToList())
-            {
-                if (tree.IsReferenced(FrepOperand.Node(id))) continue;
-                tree = tree.Remove(id);
-                pending.Remove(id);
-                removed = true;
-            }
-        } while (removed);
+            if (TryNode(tree, key, out var id)) dropNodes.Add(id);
+            else if (Guid.TryParse(key, out var g)) dropObjects.Add(g);
+        }
+        if (dropNodes.Count == 0 && dropObjects.Count == 0) return;
 
-        if (pending.Count > 0)
-            web.Send(new NoticeMessage("warning", $"Not deleted (still used by other nodes): {string.Join(", ", pending.Select(FrepTree.NodeName))}"));
-        FrepTrees.Set(doc, tree, "Delete F-rep node");
+        if (request.Deep)
+            foreach (var id in dropNodes.ToArray())
+                if (tree.Find(id) is { } node)
+                    CollectSubtree(tree, node, dropNodes, dropObjects);
+
+        // Hold pruning so the delete event doesn't record a second undo for ids we already removed.
+        pruning++;
+        uint record = doc.UndoRecordingIsActive ? 0 : doc.BeginUndoRecord("Delete");
+        try
+        {
+            var next = tree.Excise(dropNodes, dropObjects);
+            if (!ReferenceEquals(next, tree)) FrepTrees.Set(doc, next, "Delete");
+            foreach (var id in dropObjects)
+                if (doc.Objects.FindId(id) is { IsDeleted: false })
+                    doc.Objects.Delete(id, true);
+        }
+        finally
+        {
+            if (record != 0) doc.EndUndoRecord(record);
+            pruning--;
+        }
+        // Delete(quiet: true) does not repaint, and an earlier redraw still included these objects.
+        doc.Views.Redraw();
+    }
+
+    /// Every operation under <paramref name="node"/>, and every primitive those operations use.
+    /// The node itself is already in <paramref name="nodes"/>.
+    static void CollectSubtree(FrepTree tree, FrepNode node, HashSet<int> nodes, HashSet<Guid> objects)
+    {
+        foreach (var o in node.Operands)
+        {
+            if (!o.IsNode) objects.Add(o.ObjectId);
+            else if (tree.Find(o.NodeId) is { } child && nodes.Add(child.Id))
+                CollectSubtree(tree, child, nodes, objects);
+        }
+    }
+
+    /// Viewport delete of a primitive that is still an operand.
+    void PruneObjects(RhinoDoc doc, IEnumerable<Guid> ids)
+    {
+        if (pruning > 0) return;
+        var drop = ids.ToHashSet();
+        if (drop.Count == 0) return;
+        var tree = FrepTrees.Get(doc);
+        if (!tree.Nodes.Any(n => n.Operands.Any(o => !o.IsNode && drop.Contains(o.ObjectId)))) return;
+        pruning++;
+        try
+        {
+            var next = tree.Excise(new HashSet<int>(), drop);
+            if (!ReferenceEquals(next, tree)) FrepTrees.Set(doc, next, "Delete");
+        }
+        finally { pruning--; }
+    }
+
+    /// Operands whose object or node is already gone. Keeps a "(deleted)" row from sticking around.
+    void PruneDangling(RhinoDoc doc)
+    {
+        if (pruning > 0) return;
+        var tree = FrepTrees.Get(doc);
+        var nodes = new HashSet<int>();
+        var objects = new HashSet<Guid>();
+        foreach (var n in tree.Nodes)
+            foreach (var o in n.Operands)
+            {
+                if (o.IsNode)
+                {
+                    if (tree.Find(o.NodeId) == null) nodes.Add(o.NodeId);
+                }
+                else if (doc.Objects.FindId(o.ObjectId) is not { IsDeleted: false })
+                    objects.Add(o.ObjectId);
+            }
+        if (nodes.Count == 0 && objects.Count == 0) return;
+        pruning++;
+        try
+        {
+            var next = tree.Excise(nodes, objects);
+            if (!ReferenceEquals(next, tree)) FrepTrees.Set(doc, next, "Delete");
+        }
+        finally { pruning--; }
     }
 
     void RunCommand(RunCommandRequest request)

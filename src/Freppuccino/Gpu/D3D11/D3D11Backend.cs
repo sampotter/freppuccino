@@ -28,7 +28,7 @@ public sealed class D3D11Backend : IGpuBackend
     sealed record Program(IntPtr Vs, IntPtr Ps);
 
     readonly Dictionary<string, Program> programs = new();
-    readonly HashSet<string> failed = new();
+    readonly Dictionary<string, string> failed = new(); // hash → error; never retried (cleared with the device)
     readonly HashSet<string> logged = new();
 
     IntPtr device;          // Rhino's, not owned; identity only (cache key)
@@ -205,7 +205,7 @@ public sealed class D3D11Backend : IGpuBackend
     Program? GetProgram(ShaderSource src)
     {
         if (programs.TryGetValue(src.Hash, out var p)) return p;
-        if (failed.Contains(src.Hash)) return null;
+        if (failed.ContainsKey(src.Hash)) return null;
         IntPtr vs = IntPtr.Zero, ps = IntPtr.Zero;
         try
         {
@@ -220,7 +220,7 @@ public sealed class D3D11Backend : IGpuBackend
         catch (Exception ex)
         {
             SafeRelease(ref vs); SafeRelease(ref ps);
-            failed.Add(src.Hash);
+            failed[src.Hash] = ex.Message;
             RhinoApp.WriteLine($"Freppuccino D3D11: shader {src.Hash} failed: {ex.Message}");
             return null;
         }
@@ -238,6 +238,16 @@ public sealed class D3D11Backend : IGpuBackend
         SafeRelease(ref ctxState); ctxStateFailed = false;
         SafeRelease(ref rs); SafeRelease(ref dss); SafeRelease(ref cb); SafeRelease(ref device1);
         device = IntPtr.Zero; initOk = false;
+    }
+
+    public string? CompileError(ShaderSource program) => failed.GetValueOrDefault(program.Hash);
+
+    public string? Compile(ShaderSource program)
+    {
+        if (!OperatingSystem.IsWindows() || !initOk) return null;
+        try { GetProgram(program); }
+        catch (Exception ex) { LogOnce("compile:" + ex.GetType().Name, "Freppuccino D3D11: " + ex); }
+        return CompileError(program);
     }
 
     public void Dispose() => ReleaseAll();

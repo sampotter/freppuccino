@@ -17,7 +17,11 @@ export interface Skill {
   body: string
 }
 
-const files = import.meta.glob('./skills/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
+const files = {
+  ...import.meta.glob('./skills/*.md', { query: '?raw', import: 'default', eager: true }),
+  // Shared with external Claude Code sessions and the plugin's `help` tool (single source, embedded by Freppuccino.csproj).
+  ...import.meta.glob('../../../../.claude/skills/freppuccino-*/SKILL.md', { query: '?raw', import: 'default', eager: true }),
+} as Record<string, string>
 
 function parse(path: string, raw: string): Skill {
   const fileName = path.split('/').pop()!.replace(/\.md$/, '')

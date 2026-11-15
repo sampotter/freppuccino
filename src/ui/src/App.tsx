@@ -46,7 +46,7 @@ export default function App() {
   return (
     <div className="relative flex h-dvh flex-col overflow-hidden">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <img src={appIcon} alt="" className="size-6" />
+        <img src={appIcon} alt="" className="h-8 w-auto" />
         {/* Wordmark: ink = currentColor, "FRep" = --wordmark-accent (caramel / caramel-ink per theme) */}
         <span
           role="img"

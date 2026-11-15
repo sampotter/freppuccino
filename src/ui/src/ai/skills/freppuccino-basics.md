@@ -21,6 +21,15 @@ always: true
 - Every primitive takes an optional color ("#RRGGBB" or a name). Give parts their real colors (a tan cone, red stripes);
   colors blend smoothly across blended joins. Uncolored parts render light grey.
 
+## Colors (set_color)
+- set_color recolors existing primitives without touching their shape: refs + color for one color, or
+  colors: [{ref, color}, ...] to paint many parts in one call (one undo step). A node ref paints every primitive under it.
+- update_primitive also takes color, but use set_color for color-only changes, especially several parts at once.
+- How colors combine: union / intersect fade between the operands' colors across the blend (k); subtract keeps the
+  target's color on the cut faces (the cutter's color never shows); deforms keep the child's colors.
+  So to color a cut surface (a cup's inside), color the target, or union a thin colored part inside it.
+- get_scene lists every primitive's color.
+
 ## Deforms (deform tool)
 - twist, bend and repeat wrap one finished part: spirals and swirls, coils, ropes, hooks and curved parts, arrays and
   patterns of identical features (studs, pickets, holes). Load the deformations skill before using them.
@@ -32,6 +41,9 @@ always: true
   then combine those nodes. Don't put the same operand into two operations.
 - subtract: operands[0] is the target; every other operand is cut away from it.
 - Editing a primitive (update_primitive / transform) updates every operation above it. Prefer editing over deleting.
+- Restructure in place: add_operand / remove_operand change an existing node's operands; move re-parents a primitive
+  or node (to another node, or to the root with no "to"). A node keeps ≥ 1 operand; a deform exactly 1 (move into it
+  to swap its target). Node refs (N#) never change.
 - Order matters for cavities: union the outside parts first, THEN subtract the cavity, so the cut also clears any part
   that pokes into it (e.g. the inner half of a handle torus).
 

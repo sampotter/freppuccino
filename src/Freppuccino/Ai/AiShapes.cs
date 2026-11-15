@@ -17,6 +17,8 @@ namespace Freppuccino.Ai;
 ///   cone       start, end, start_radius, end_radius (one may be 0 for a point; both > 0 = frustum)
 ///   torus      center, axis? (normal of the ring plane, default [0,0,1]), major_radius, minor_radius
 ///   pyramid    base_center, axis? (base → apex, default [0,0,1]), height, base_size (square side), x_axis? (a base edge)
+///   function   center, size, x_axis?, y_axis? (the clip box, like box) + ok / error / lipschitz / params (read-only here;
+///              code and params are edited with the function tools, Ai/AiFunctions.cs)
 /// </summary>
 public static class AiShapes
 {
@@ -31,6 +33,7 @@ public static class AiShapes
         SdKind.Cone => "cone",
         SdKind.Torus => "torus",
         SdKind.Pyramid => "pyramid",
+        SdKind.User => "function",
         _ => kind.ToString().ToLowerInvariant(),
     };
 
@@ -84,6 +87,12 @@ public static class AiShapes
                 var x = Direction(s, "x_axis", WorldX);
                 return new(SdKind.Pyramid, FrepInput.AxisFrame(c, axis, x), new Vector3d(Positive(s, "height"), Positive(s, "base_size"), 0));
             }
+            case "function": // clip box only; Fn (code / params / L) is the caller's (create_function, or kept by update_primitive)
+            {
+                var size = Vec(s, "size");
+                RequirePositive("size", size);
+                return new(SdKind.User, Frame(s), size * 0.5);
+            }
             default:
                 throw new AiToolException($"unknown type '{type}'; use one of: {string.Join(", ", Types)}");
         }
@@ -134,6 +143,25 @@ public static class AiShapes
                 o["height"] = Round(v.X);
                 o["base_size"] = Round(v.Y);
                 o["x_axis"] = Json(f.XAxis);
+                break;
+            case SdKind.User:
+                o["center"] = Json(f.Origin);
+                o["size"] = Json(v * 2);
+                AddAxes(o, f);
+                if (p.Fn is { } fn)
+                {
+                    o["ok"] = fn.Result.Ok;
+                    if (!fn.Result.Ok && fn.Result.Diagnostics.Length > 0) o["error"] = fn.Result.Diagnostics[0].ToString();
+                    if (fn.L != 1) o["lipschitz"] = Round(fn.L);
+                    if (fn.Program is { Params.Length: > 0 } program)
+                    {
+                        var prms = new JsonObject();
+                        for (int i = 0; i < program.Params.Length; i++)
+                            prms[program.Params[i].Name] = Round(i < fn.Values.Length ? fn.Values[i] : program.Params[i].Default);
+                        o["params"] = prms;
+                    }
+                }
+                if (p.Basis != null) o["stretched"] = true; // scaled / sheared after creation (SDF.Linear): the function is stretched too
                 break;
         }
         return o;

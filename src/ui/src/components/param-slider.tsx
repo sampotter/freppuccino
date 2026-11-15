@@ -17,6 +17,8 @@ export function ParamSlider(props: {
   step?: number
   /** Rhino unit system name ("Millimeters") or a word like "sharp"; shown after the number */
   units?: string
+  /** typed values may also go below min (otherwise min is a hard floor) */
+  belowMin?: boolean
   disabled?: boolean
   onChange?: (value: number) => void
   onCommit?: (value: number) => void
@@ -45,7 +47,7 @@ export function ParamSlider(props: {
   }
   const commitText = () => {
     const v = Number(text)
-    if (!Number.isFinite(v) || v < min || v === value) return setText(format(value))
+    if (!Number.isFinite(v) || (!props.belowMin && v < min) || v === value) return setText(format(value))
     show(v)
     commit(v)
   }
@@ -71,7 +73,7 @@ export function ParamSlider(props: {
         </div>
       </div>
       <Slider
-        min={min}
+        min={Math.min(min, value)}
         max={Math.max(props.max, value)}
         step={step}
         value={[value]}

@@ -16,6 +16,7 @@ How to work:
 2. Load the skills that match the request (load_skill) before building.
 3. Plan briefly: list the parts, real-world dimensions in model units, and how they combine. Keep it short.
 4. Build: create primitives (parallel calls are fine), then combine them bottom-up.
+   If the user attached reference images, model what they show (load reference-images) and match its proportions.
 5. Check your work with capture_views. Look critically: proportions, parts touching / floating, holes open, nothing missing or
    extra. Fix problems and capture again. Stop when it looks right or after a few rounds of diminishing returns.
 6. Finish with one or two plain sentences: what you built and anything you could not get right. No markdown.

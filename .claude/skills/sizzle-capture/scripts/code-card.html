@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Code card for clip 13: a transparent 1920x1080 layer with a brand-styled code panel on the left 40%, showing the
+     real param lines of examples/ffunction/scherk_tower.glsl with the animated param highlighted. It stands in for the
+     panel's code view (a scripted render can't show the panel). Params in the hash: #wings=3
+     Rendered by code-card.sh with headless Edge. Fonts: brand-kit/fonts (copied next to this file by the script). -->
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: Mono; src: url(JetBrainsMono-Variable.woff2); font-weight: 100 800; }
+@font-face { font-family: Fredoka; src: url(Fredoka.ttf); font-weight: 300 700; }
+html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
+#wrap { position: relative; width: 1920px; height: 1080px; }
+#card { position: absolute; left: 72px; top: 322px; width: 700px; overflow: hidden; padding: 34px 0 40px; border-radius: 24px;
+        background: #1e1512; box-shadow: 0 18px 50px rgba(30, 21, 18, 0.28); }
+#title { font-family: Fredoka, sans-serif; font-weight: 600; font-size: 26px; color: #f0b070; padding: 0 38px 22px; }
+#title span { color: #c4ac9c; font-weight: 400; }
+pre { margin: 0; font-family: Mono, monospace; font-size: 24px; line-height: 44px; color: #fbefe2; }
+.l { display: block; padding: 0 38px; white-space: pre; }
+.k { color: #c99470; }           /* param float */
+.c { color: #8a6e5e; }           /* comments */
+.n { color: #9fd6ab; }           /* numbers */
+.hot { background: rgba(224, 149, 74, 0.22); box-shadow: inset 5px 0 0 #e0954a; }
+.hot .n { color: #ffffff; font-weight: 700; }
+</style></head>
+<body><div id="wrap"><div id="card"><div id="title">scherk_tower<span>.glsl</span></div><pre id="code"></pre></div></div>
+<script>
+const p = new URLSearchParams(location.hash.slice(1));
+const wings = p.get('wings') || '3';
+const lines = [
+  ['period', '27.0', 'stack height'],
+  ['wings', wings + '.0', '2n wings'],
+  ['twist', '0.022', 'rad / unit'],
+  ['taper', '0.35', 'taper'],
+  ['lean', '0.0025', 'lean'],
+  ['R0', '16.0', 'base radius'],
+  ['th', '0.9', 'wall'],
+];
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+document.getElementById('code').innerHTML = lines.map(([name, v, c]) =>
+  `<span class="l${name === 'wings' ? ' hot' : ''}"><span class="k">param float</span> ${esc(name.padEnd(6))} = <span class="n">${v}</span>;  <span class="c">// ${esc(c)}</span></span>`
+).join('');
+</script></body></html>

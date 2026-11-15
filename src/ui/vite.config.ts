@@ -1,7 +1,7 @@
 import path from 'node:path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig, searchForWorkspaceRoot, type Plugin } from 'vite'
 
 // The built app is served by the Rhino side panel: https://freppuccino.ui/ on Windows (WebView2),
 // file:// on macOS (WKWebView). See src/Freppuccino/Ui/WebViewHost.cs. `npm run dev` serves the same app in a
@@ -31,5 +31,10 @@ export default defineConfig({
     modulePreload: false,
     rollupOptions: { output: { format: 'iife' } },
   },
-  server: { port: 5173, strictPort: true },
+  server: {
+    port: 5173,
+    strictPort: true,
+    // skills.ts also loads the repo's .claude/skills/freppuccino-*/SKILL.md (outside this root).
+    fs: { allow: [searchForWorkspaceRoot(process.cwd()), path.resolve(import.meta.dirname, '../../.claude/skills')] },
+  },
 })

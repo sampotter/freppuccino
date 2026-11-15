@@ -27,6 +27,7 @@ public static class SdfTransforms
         [FConeCommand.SdfType] = FConeCommand.TransformSdf,
         [FEllipsoidCommand.SdfType] = FEllipsoidCommand.TransformSdf,
         [FPyramidCommand.SdfType] = FPyramidCommand.TransformSdf,
+        [FFunctionCommand.SdfType] = FFunctionCommand.TransformSdf,
     };
 
     public static void Register(string sdfType, SdfTransformHandler handler) => Handlers[sdfType] = handler;
@@ -125,7 +126,7 @@ public static class SdfTransforms
     }
 
     /// <summary>Cyclic Jacobi on a symmetric 3×3 (destroys <paramref name="a"/>). Eigenvalues w, eigenvectors in v's columns.</summary>
-    static void SymmetricEigen(double[,] a, out double[] w, out double[,] v)
+    internal static void SymmetricEigen(double[,] a, out double[] w, out double[,] v)
     {
         v = new double[3, 3] { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
         double scale = Math.Abs(a[0, 0]) + Math.Abs(a[1, 1]) + Math.Abs(a[2, 2]);
@@ -195,9 +196,20 @@ public static class SdfTransforms
     /// </summary>
     public static bool CommitAffine(ObjectAttributes attributes, Plane frame, Transform xform, Func<Vector3d, bool> absorb, out string? reason)
     {
-        var current = SdfUserText.TryReadLinear(attributes, out var lx, out var ly, out var lz)
-            ? new SdfBasis(lx, ly, lz)
-            : SdfBasis.FromPlane(frame);
+        SdfBasis current;
+        switch (SdfUserText.ReadLinear(attributes, out var lx, out var ly, out var lz))
+        {
+            case SdfUserText.LinearState.Valid:
+                current = new SdfBasis(lx, ly, lz);
+                break;
+            case SdfUserText.LinearState.Invalid:
+                // Never compose onto an unreadable map as if it were the frame axes.
+                reason = "unreadable or degenerate " + SdfUserText.LinearXKey;
+                return false;
+            default:
+                current = SdfBasis.FromPlane(frame);
+                break;
+        }
         if (!TryAdvance(frame, current, xform, out var origin, out var factored, out var next, out var scale, out var rigid, out reason))
             return false;
 
@@ -218,6 +230,14 @@ public static class SdfTransforms
     }
 
     /// <summary>
+    /// The one validity test for a primitive's canonical-to-world map, on write (<see cref="TryAdvance"/>) and on read
+    /// (<see cref="SdfUserText.ReadLinear"/>): invertible with condition number below 1e9. Scale-relative, so a healthy
+    /// map of any absolute size passes.
+    /// </summary>
+    public static bool IsUsableBasis(SdfBasis basis) =>
+        TryMetrics(basis, out _, out _, out _, out var sigmaMin, out var sigmaMax) && sigmaMin > 1e-9 * Math.Max(sigmaMax, 1e-300);
+
+    /// <summary>
     /// <paramref name="next"/> is the map's columns after <paramref name="xform"/>.
     /// <paramref name="rigid"/> means those columns are perpendicular, so <paramref name="scale"/> is their lengths
     /// and <paramref name="factored"/> is the unit frame. <paramref name="origin"/> is the transformed frame origin either way.
@@ -230,7 +250,7 @@ public static class SdfTransforms
         factored = Plane.Unset;
         scale = Vector3d.Unset;
         rigid = false;
-        if (!TryMetrics(next, out _, out _, out _, out var sigmaMin, out var sigmaMax) || sigmaMin <= 1e-9 * Math.Max(sigmaMax, 1e-12))
+        if (!IsUsableBasis(next))
         {
             reason = "transform flattens the primitive";
             return false;
@@ -275,7 +295,8 @@ public static class SdfTransforms
         var c2 = basis.Z;
         double det = c0 * Vector3d.CrossProduct(c1, c2);
         double volume = c0.Length * c1.Length * c2.Length;
-        if (!(Math.Abs(det) > 1e-12 * Math.Max(volume, 1e-30))) return false;
+        // Scale-relative: the determinant of the normalized columns (no absolute floor, so a healthy map of any size passes).
+        if (!(volume > 0 && double.IsFinite(det / volume) && Math.Abs(det / volume) > 1e-12)) return false;
         double invDet = 1.0 / det;
         r0 = Vector3d.CrossProduct(c1, c2) * invDet;
         r1 = Vector3d.CrossProduct(c2, c0) * invDet;
