@@ -105,6 +105,24 @@ public static class ControlOutlines
         }
     }
 
+    public static List<(FrepInstance Instance, Curve[] Curves)> Pickable(RhinoDoc doc, RhinoViewport vp)
+    {
+        var scene = Scene.FrepScene.Get(doc);
+        var (_, instances) = FrepInstances.Compute(Csg.FrepTrees.Get(doc), scene.Ids);
+        var result = new List<(FrepInstance, Curve[])>();
+        foreach (var group in instances.GroupBy(i => i.Object))
+        {
+            if (doc.Objects.FindId(group.Key) is not { IsLocked: false, IsHidden: false, Visible: true } o || !IsControl(o)) continue;
+            if (!group.First().T.TryGetInverse(out var primaryInv)) continue;
+            foreach (var inst in group)
+            {
+                var eff = inst.T * primaryInv;
+                result.Add((inst, Outline(o, Placement.IsIdentity(eff, 1e-12) ? null : eff, vp, doc)));
+            }
+        }
+        return result;
+    }
+
     static void Draw(DisplayPipeline dp, RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc, System.Drawing.Color color, int thickness)
     {
         foreach (var c in Outline(o, rel, vp, doc)) dp.DrawCurve(c, color, thickness);
