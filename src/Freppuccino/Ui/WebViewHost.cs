@@ -37,7 +37,7 @@ public sealed class WebViewHost : IDisposable
     readonly string? missingUi;
     DateTime waitingSince, lastIdle;
     int recoveries;
-    bool heard;
+    bool heard, disposed;
 
     public WebViewHost()
     {
@@ -50,7 +50,7 @@ public sealed class WebViewHost : IDisposable
         }
         transport.Load(startUri);
         waitingSince = lastIdle = DateTime.UtcNow;
-        RhinoApp.Idle += OnIdle;
+        if (OperatingSystem.IsWindows() && startUri == transport.PageUri(UiFolder)) RhinoApp.Idle += OnIdle;
     }
 
     IWebTransport CreateTransport()
@@ -65,15 +65,18 @@ public sealed class WebViewHost : IDisposable
 
     void OnIdle(object? sender, EventArgs e)
     {
+        if (heard) return;
         var now = DateTime.UtcNow;
-        if (now - lastIdle > TimeSpan.FromSeconds(2) || !Control.Loaded) waitingSince = now;
+        if (now - lastIdle > TimeSpan.FromSeconds(2) || !Shown) waitingSince = now;
         lastIdle = now;
-        if (!heard && now - waitingSince > TimeSpan.FromSeconds(20)) Recover();
+        if (now - waitingSince > TimeSpan.FromSeconds(20)) Recover();
     }
+
+    bool Shown => Control.Loaded && Control.ControlObject?.GetType().GetProperty("IsVisible")?.GetValue(Control.ControlObject) is not false;
 
     void Recover()
     {
-        if (missingUi != null) return;
+        if (missingUi != null || disposed) return;
         if (recoveries++ >= 3)
         {
             RhinoApp.Idle -= OnIdle;
@@ -126,6 +129,7 @@ public sealed class WebViewHost : IDisposable
     {
         if (!IsOurs(source)) return;
         heard = true;
+        recoveries = 0;
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -168,6 +172,7 @@ public sealed class WebViewHost : IDisposable
 
     public void Dispose()
     {
+        disposed = true;
         RhinoApp.Idle -= OnIdle;
         transport.Received -= OnReceived;
         transport.Dispose();
