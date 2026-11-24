@@ -1,3 +1,4 @@
+using System.Reflection;
 using Eto.Forms;
 using Microsoft.Web.WebView2.Core;
 using Rhino;
@@ -18,10 +19,15 @@ sealed class WebView2Transport : IWebTransport
     readonly NavigationFilter allowNavigation;
     readonly Action<string> openNewWindow;
     CoreWebView2? core;
-    Uri? pending;
+    Uri? target;
     string? uiFolder;
+    object? native;
+    EventInfo? initEvent;
+    EventHandler<CoreWebView2InitializationCompletedEventArgs>? initHandler;
+    bool disposed;
 
     public event Action<string, string?>? Received;
+    public event Action? Lost;
 
     public WebView2Transport(WebView control, NavigationFilter allowNavigation, Action<string> openNewWindow)
     {
@@ -38,7 +44,7 @@ sealed class WebView2Transport : IWebTransport
 
     public void Load(Uri uri)
     {
-        pending = uri;
+        target = uri;
         if (core != null) Navigate(core);
         else HookCore();
     }
@@ -59,37 +65,60 @@ sealed class WebView2Transport : IWebTransport
     void HookCore()
     {
         // The WPF control creates CoreWebView2 asynchronously once it is in the visual tree.
-        var native = control.ControlObject;
+        if (initHandler != null || disposed) return;
+        native = control.ControlObject;
         if (TryGetCore(native) is { } ready)
         {
             Attach(ready);
             return;
         }
-        var evt = native?.GetType().GetEvent("CoreWebView2InitializationCompleted");
-        if (evt == null)
+        initEvent = native?.GetType().GetEvent("CoreWebView2InitializationCompleted");
+        if (initEvent == null)
         {
             RhinoApp.WriteLine("Freppuccino: side panel needs WebView2 (Windows).");
             return;
         }
-        EventHandler<CoreWebView2InitializationCompletedEventArgs> handler = null!;
-        handler = (_, e) =>
+        initHandler = (_, e) =>
         {
-            evt.RemoveEventHandler(native, handler);
+            Unhook();
+            if (disposed) return;
             if (!e.IsSuccess)
             {
                 RhinoApp.WriteLine($"Freppuccino: WebView2 failed to start: {e.InitializationException?.Message}");
+                Lost?.Invoke();
                 return;
             }
             if (TryGetCore(native) is { } c) Attach(c);
         };
-        evt.AddEventHandler(native, handler);
+        initEvent.AddEventHandler(native, initHandler);
+        if (TryGetCore(native) is { } late)
+        {
+            Unhook();
+            Attach(late);
+        }
     }
 
-    static CoreWebView2? TryGetCore(object? native) =>
-        native?.GetType().GetProperty("CoreWebView2")?.GetValue(native) as CoreWebView2;
+    void Unhook()
+    {
+        if (initHandler != null) initEvent?.RemoveEventHandler(native, initHandler);
+        initHandler = null;
+    }
+
+    static CoreWebView2? TryGetCore(object? native)
+    {
+        try
+        {
+            return native?.GetType().GetProperty("CoreWebView2")?.GetValue(native) as CoreWebView2;
+        }
+        catch (TargetInvocationException)
+        {
+            return null;
+        }
+    }
 
     void Attach(CoreWebView2 c)
     {
+        if (disposed || core == c) return;
         core = c;
         c.Settings.AreDevToolsEnabled = WebViewHost.DevTools; // F12 / right-click → Inspect
         c.Settings.AreDefaultContextMenusEnabled = WebViewHost.DevTools;
@@ -100,16 +129,31 @@ sealed class WebView2Transport : IWebTransport
         c.WebMessageReceived += OnWebMessageReceived;
         c.NavigationStarting += OnNavigationStarting;
         c.NewWindowRequested += OnNewWindowRequested;
+        c.ProcessFailed += OnProcessFailed;
         Navigate(c);
     }
 
     void Navigate(CoreWebView2 c)
     {
-        if (pending == null) return;
-        if (pending.Host == VirtualHost && uiFolder != null)
+        if (target == null) return;
+        if (target.Host == VirtualHost && uiFolder != null)
             c.SetVirtualHostNameToFolderMapping(VirtualHost, uiFolder, CoreWebView2HostResourceAccessKind.DenyCors);
-        c.Navigate(pending.AbsoluteUri);
-        pending = null;
+        c.Navigate(target.AbsoluteUri);
+    }
+
+    void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
+    {
+        switch (e.ProcessFailedKind)
+        {
+            case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                Detach();
+                Lost?.Invoke();
+                break;
+            case CoreWebView2ProcessFailedKind.RenderProcessExited:
+            case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
+                Lost?.Invoke();
+                break;
+        }
     }
 
     void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
@@ -126,15 +170,22 @@ sealed class WebView2Transport : IWebTransport
     void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e) =>
         Received?.Invoke(e.WebMessageAsJson, e.Source);
 
+    void Detach()
+    {
+        if (core == null) return;
+        core.WebMessageReceived -= OnWebMessageReceived;
+        core.NavigationStarting -= OnNavigationStarting;
+        core.NewWindowRequested -= OnNewWindowRequested;
+        core.ProcessFailed -= OnProcessFailed;
+        core = null;
+    }
+
     public void Dispose()
     {
-        if (core != null)
-        {
-            core.WebMessageReceived -= OnWebMessageReceived;
-            core.NavigationStarting -= OnNavigationStarting;
-            core.NewWindowRequested -= OnNewWindowRequested;
-            core = null;
-        }
+        disposed = true;
+        Unhook();
+        Detach();
         Received = null;
+        Lost = null;
     }
 }
