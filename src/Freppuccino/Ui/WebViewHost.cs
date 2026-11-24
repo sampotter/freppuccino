@@ -58,6 +58,7 @@ public sealed class WebViewHost : IDisposable
         IWebTransport t = OperatingSystem.IsWindows()
             ? new WebView2Transport(Control, AllowNavigation, OpenExternally)
             : new EtoWebTransport(Control, AllowNavigation, OpenExternally);
+        t.PageUri(UiFolder);
         t.Received += OnReceived;
         t.Lost += () => RhinoApp.InvokeOnUiThread(Recover);
         return t;
