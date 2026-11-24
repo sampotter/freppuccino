@@ -230,7 +230,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
                 if (n.Id == toNodeId && index is { } x && at < x) index = x - 1;
                 n = n with { Operands = n.Operands.RemoveAt(at) };
                 nodes = nodes.SetItem(i, n);
-                if (n.Operands.Length > 0) continue;
+                if (n.Operands.Length > 0 || n.Id == toNodeId) continue;
                 if (n.Op.IsWarp()) throw new ArgumentException($"{n.Name} is a {n.Op} warp and would lose its only operand");
                 gone.Enqueue(n.Id);
             }

@@ -70,7 +70,7 @@ export function SceneTree(props: {
           />
         ))}
       </ul>
-      {drag?.from && !drag.stuck && (
+      {drag?.from && !drag.stuck && !drag.placement && (
         <div
           onDragOver={(e) => {
             e.preventDefault()
@@ -84,7 +84,7 @@ export function SceneTree(props: {
             endDrag()
           }}
           className={cn(
-            'type-small mx-2 mb-2 grid h-9 place-items-center rounded-sm border border-dashed text-muted-foreground',
+            'type-small sticky bottom-0 mx-2 mb-2 grid h-9 place-items-center rounded-sm border border-dashed bg-background text-muted-foreground',
             drop?.zone === 'root' && 'border-primary bg-accent/50 text-foreground',
           )}
         >
@@ -128,7 +128,7 @@ export function SceneTree(props: {
   )
 }
 
-type Drag = { id: Id; from: Id | null; index: number; inside: Set<Id>; stuck: boolean }
+type Drag = { id: Id; from: Id | null; placement?: string; index: number; inside: Set<Id>; stuck: boolean }
 type Drop = { path: string; zone: 'before' | 'after' | 'into' | 'root' }
 type Dnd = {
   drag: Drag | null
@@ -139,6 +139,7 @@ type Dnd = {
 }
 
 const isCombine = (n: SceneNode | null) => !n || n.op === 'union' || n.op === 'subtract' || n.op === 'intersect'
+const placedLike = (drag: Drag, target: SceneNode | null) => (target?.placement ?? undefined) === drag.placement
 
 function subtreeIds(node: SceneNode, into = new Set<Id>()): Set<Id> {
   into.add(node.id)
@@ -179,8 +180,9 @@ function TreeRow(props: {
     if (drag.stuck) return null
     const r = e.currentTarget.getBoundingClientRect()
     const y = (e.clientY - r.top) / r.height
-    const canInto = node.kind === 'operation' && isCombine(node) && !node.missing && !drag.inside.has(node.id)
-    const canBeside = isCombine(parent) && !(parent && drag.inside.has(parent.id)) && node.id !== drag.id
+    const canInto = node.kind === 'operation' && isCombine(node) && !node.missing && !drag.inside.has(node.id) &&
+      drag.from !== node.id && placedLike(drag, node)
+    const canBeside = isCombine(parent) && !(parent && drag.inside.has(parent.id)) && node.id !== drag.id && placedLike(drag, parent)
     if (canInto && (!canBeside || (y > 0.25 && y < 0.75))) return 'into'
     if (!canBeside) return null
     return y < 0.5 ? 'before' : 'after'
@@ -227,7 +229,7 @@ function TreeRow(props: {
           e.stopPropagation()
           e.dataTransfer.effectAllowed = 'move'
           e.dataTransfer.setData('text/plain', node.id)
-          dnd.setDrag({ id: node.id, from: parent?.id ?? null, index, inside: subtreeIds(node), stuck: !isCombine(parent) })
+          dnd.setDrag({ id: node.id, from: parent?.id ?? null, placement: parent?.placement, index, inside: subtreeIds(node), stuck: !isCombine(parent) || parent?.placement === 'mixed' })
         }}
         onDragEnd={dnd.endDrag}
         onDragOver={(e) => {

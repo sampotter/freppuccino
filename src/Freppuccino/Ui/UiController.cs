@@ -283,6 +283,7 @@ public sealed class UiController : IDisposable
     {
         var tree = FrepTrees.Get(doc);
         var built = new Dictionary<int, SceneNode>();
+        var memo = new Dictionary<int, List<Transform>>();
 
         SceneNode Node(FrepNode n)
         {
@@ -302,7 +303,8 @@ public sealed class UiController : IDisposable
             }
             return built[n.Id] = new SceneNode(
                 Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
-                Op: ToKind(n.Op), K: n.K, Children: children);
+                Op: ToKind(n.Op), K: n.K, Children: children,
+                Placement: n.Op is FrepOp.Union or FrepOp.Intersect or FrepOp.Difference ? PlacementKey(Placements(tree, n.Id, memo)) : null);
         }
 
         var roots = tree.Nodes.Where(n => !tree.IsReferenced(FrepOperand.Node(n.Id))).Select(Node).ToList();
@@ -852,7 +854,7 @@ public sealed class UiController : IDisposable
         var placed = Placements(tree, from);
         if (placed.Count != 1 || Placements(tree, to) is not [var there] || !Selection.FrepInstances.Same(placed[0], there))
         {
-            web.Send(new NoticeMessage("warning", "Can't move it there: it would change where it sits in the model."));
+            web.Send(new NoticeMessage("warning", "Can't move it there: the new parent is placed differently, so it would shift in the model."));
             return;
         }
         FrepTree next;
@@ -869,9 +871,17 @@ public sealed class UiController : IDisposable
         doc.Views.Redraw();
     }
 
-    static List<Transform> Placements(FrepTree tree, int? nodeId)
+    static string? PlacementKey(List<Transform> placements)
     {
-        var memo = new Dictionary<int, List<Transform>>();
+        if (placements.Count != 1) return "mixed";
+        var t = placements[0];
+        if (Selection.FrepInstances.Same(t, Transform.Identity)) return null;
+        return string.Join(",", Enumerable.Range(0, 12).Select(i => Math.Round(t[i / 4, i % 4], 6).ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+    }
+
+    static List<Transform> Placements(FrepTree tree, int? nodeId, Dictionary<int, List<Transform>>? memo = null)
+    {
+        memo ??= [];
         List<Transform> Of(int id)
         {
             if (memo.TryGetValue(id, out var got)) return got;

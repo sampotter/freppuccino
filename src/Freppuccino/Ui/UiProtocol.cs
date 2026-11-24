@@ -67,7 +67,8 @@ public sealed record SceneNode(
     /// <summary>Primitive carries SDF.Linear.*: a scale or shear the parameters cannot express.</summary>
     bool? Custom = null,
     /// <summary>sdUser (FFunction) only: code, compile result, params. Params then holds just b.x/b.y/b.z.</summary>
-    UserFnInfo? UserFn = null);
+    UserFnInfo? UserFn = null,
+    string? Placement = null);
 
 /// <summary>FFunction inspector data (SDF.Code / SDF.L / SDF.u.*), compiled with UserFnCompiler.</summary>
 /// <param name="Hash">Program hash when <paramref name="Ok"/>.</param>

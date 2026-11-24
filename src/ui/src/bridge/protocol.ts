@@ -40,6 +40,7 @@ export interface SceneNode {
   custom?: boolean
   /** primitive sdUser (FFunction) only. Its `params` then holds just the box half-extents b.x/b.y/b.z. */
   userFn?: UserFnInfo
+  placement?: string
 }
 
 /** FFunction: SDF.Code compiled by the host (UserFn/UserFnCompiler). */
