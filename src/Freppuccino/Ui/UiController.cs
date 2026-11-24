@@ -283,6 +283,7 @@ public sealed class UiController : IDisposable
     {
         var tree = FrepTrees.Get(doc);
         var built = new Dictionary<int, SceneNode>();
+        var memo = new Dictionary<int, List<Transform>>();
 
         SceneNode Node(FrepNode n)
         {
@@ -302,7 +303,8 @@ public sealed class UiController : IDisposable
             }
             return built[n.Id] = new SceneNode(
                 Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
-                Op: ToKind(n.Op), K: n.K, Children: children);
+                Op: ToKind(n.Op), K: n.K, Children: children,
+                Placement: n.Op is FrepOp.Union or FrepOp.Intersect or FrepOp.Difference ? PlacementKey(Placements(tree, n.Id, memo)) : null);
         }
 
         var roots = tree.Nodes.Where(n => !tree.IsReferenced(FrepOperand.Node(n.Id))).Select(Node).ToList();
@@ -465,6 +467,9 @@ public sealed class UiController : IDisposable
                     break;
                 case "deleteNodes":
                     DeleteNodes(doc, Parse<DeleteNodesRequest>(message));
+                    break;
+                case "moveNode":
+                    MoveNode(doc, Parse<MoveNodeRequest>(message));
                     break;
                 case "aiTool":
                     RunAiTool(doc, Parse<AiToolRequest>(message));
@@ -832,6 +837,67 @@ public sealed class UiController : IDisposable
         doc.Objects.ModifyAttributes(obj, attributes, true);
         if (record != 0) doc.EndUndoRecord(record);
         doc.Views.Redraw();
+    }
+
+    void MoveNode(RhinoDoc doc, MoveNodeRequest request)
+    {
+        var tree = FrepTrees.Get(doc);
+        if (ParseOperand(tree, request.Id) is not { } item) return;
+        int? from = request.From is { } f ? TryNode(tree, f, out var fid) ? fid : throw new JsonException($"unknown node '{f}'") : null;
+        int? to = request.To is { } t ? TryNode(tree, t, out var tid) ? tid : throw new JsonException($"unknown node '{t}'") : null;
+        if (from == null && to == null) return;
+        if (to is { } target && tree.Find(target)!.Op is not (FrepOp.Union or FrepOp.Intersect or FrepOp.Difference))
+        {
+            web.Send(new NoticeMessage("warning", "Drop onto a union, subtract, or intersect."));
+            return;
+        }
+        var placed = Placements(tree, from);
+        if (placed.Count != 1 || Placements(tree, to) is not [var there] || !Selection.FrepInstances.Same(placed[0], there))
+        {
+            web.Send(new NoticeMessage("warning", "Can't move it there: the new parent is placed differently, so it would shift in the model."));
+            return;
+        }
+        FrepTree next;
+        try
+        {
+            next = from is { } source ? tree.MoveOut(item, source, to, request.Index) : tree.Move(item, null, to, request.Index);
+        }
+        catch (ArgumentException ex)
+        {
+            web.Send(new NoticeMessage("warning", ex.Message));
+            return;
+        }
+        if (!ReferenceEquals(next, tree)) FrepTrees.Set(doc, next, "Move in tree");
+        doc.Views.Redraw();
+    }
+
+    static string? PlacementKey(List<Transform> placements)
+    {
+        if (placements.Count != 1) return "mixed";
+        var t = placements[0];
+        if (Selection.FrepInstances.Same(t, Transform.Identity)) return null;
+        return string.Join(",", Enumerable.Range(0, 12).Select(i => Math.Round(t[i / 4, i % 4], 6).ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+    }
+
+    static List<Transform> Placements(FrepTree tree, int? nodeId, Dictionary<int, List<Transform>>? memo = null)
+    {
+        memo ??= [];
+        List<Transform> Of(int id)
+        {
+            if (memo.TryGetValue(id, out var got)) return got;
+            memo[id] = [];
+            var own = tree.Find(id)!.M;
+            var parents = tree.Nodes.Where(n => n.Operands.Contains(FrepOperand.Node(id))).ToList();
+            var above = parents.Count == 0 ? [Transform.Identity] : parents.SelectMany(p => Of(p.Id));
+            var result = new List<Transform>();
+            foreach (var a in above)
+            {
+                var t = a * own;
+                if (!result.Any(r => Selection.FrepInstances.Same(r, t))) result.Add(t);
+            }
+            return memo[id] = result;
+        }
+        return nodeId is { } n ? Of(n) : [Transform.Identity];
     }
 
     /// Deletes the nodes and primitives in the request, then folds parents that no longer have enough children.

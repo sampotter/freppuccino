@@ -211,6 +211,36 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         return t.Sorted();
     }
 
+    public FrepTree MoveOut(FrepOperand operand, int fromNodeId, int? toNodeId, int? index)
+    {
+        var from = Get(fromNodeId);
+        if (from.Op.IsWarp() || from.Operands.Length != 1 || from.Operands[0] != operand || toNodeId == fromNodeId)
+            return Move(operand, fromNodeId, toNodeId, index);
+        var nodes = Nodes;
+        var gone = new Queue<int>([fromNodeId]);
+        while (gone.TryDequeue(out var id))
+        {
+            var self = FrepOperand.Node(id);
+            nodes = nodes.RemoveAll(n => n.Id == id);
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                var n = nodes[i];
+                int at = n.Operands.IndexOf(self);
+                if (at < 0) continue;
+                if (n.Id == toNodeId && index is { } x && at < x) index = x - 1;
+                n = n with { Operands = n.Operands.RemoveAt(at) };
+                nodes = nodes.SetItem(i, n);
+                if (n.Operands.Length > 0 || n.Id == toNodeId) continue;
+                if (n.Op.IsWarp()) throw new ArgumentException($"{n.Name} is a {n.Op} warp and would lose its only operand");
+                gone.Enqueue(n.Id);
+            }
+        }
+        var t = this with { Nodes = nodes };
+        if (toNodeId is not { } tid) return t;
+        if (t.Find(tid) == null) throw new ArgumentException($"{NodeName(tid)} would be left empty and removed");
+        return t.AddOperand(tid, operand, index);
+    }
+
     /// True if node <paramref name="id"/> is (transitively) under node <paramref name="ancestorId"/>.
     public bool IsDescendant(int id, int ancestorId)
     {

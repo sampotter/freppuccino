@@ -67,7 +67,8 @@ public sealed record SceneNode(
     /// <summary>Primitive carries SDF.Linear.*: a scale or shear the parameters cannot express.</summary>
     bool? Custom = null,
     /// <summary>sdUser (FFunction) only: code, compile result, params. Params then holds just b.x/b.y/b.z.</summary>
-    UserFnInfo? UserFn = null);
+    UserFnInfo? UserFn = null,
+    string? Placement = null);
 
 /// <summary>FFunction inspector data (SDF.Code / SDF.L / SDF.u.*), compiled with UserFnCompiler.</summary>
 /// <param name="Hash">Program hash when <paramref name="Ok"/>.</param>
@@ -169,6 +170,8 @@ public sealed record SetNodeParamRequest(string Id, string Name, double Value, b
 /// Delete operation nodes or primitives. Without <see cref="Deep"/>, a node's children take its place.
 /// With <see cref="Deep"/>, the node and every node and primitive under it are removed.
 public sealed record DeleteNodesRequest(string[] Ids, bool Deep = false);
+
+public sealed record MoveNodeRequest(string Id, string? From = null, string? To = null, int? Index = null);
 
 /// AI agent tool call (Ai/AiTools.cs); answered with an AiToolResultMessage carrying the same CallId.
 public sealed record AiToolRequest(string CallId, string Tool, JsonElement? Args = null, string? Source = null);
