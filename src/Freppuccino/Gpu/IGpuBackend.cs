@@ -17,6 +17,8 @@ public interface IGpuBackend : IDisposable
     /// Builds <paramref name="program"/> on the device last drawn with (cached like Draw; no drawing), then
     /// <see cref="CompileError"/>. Null if it builds, or if no device has been seen yet.
     string? Compile(ShaderSource program);
+
+    bool Building(ShaderSource program) => false;
 }
 
 public static class GpuBackends

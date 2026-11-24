@@ -13,6 +13,7 @@ namespace Freppuccino.Display;
 public sealed class ShaderConduit : DisplayConduit
 {
     const string Badge = "FREP MODE";
+    const string Compiling = "Compiling shader…";
     const int BadgeTextHeight = 11, BadgeMargin = 10, BadgePadX = 9, BadgePadY = 5;
     /// Rhino draws the viewport title (view name, e.g. "Perspective" or a restored named view) in the top-left corner;
     /// the badge sits just below it so long names never run into it. Logical px, y down.
@@ -80,7 +81,7 @@ public sealed class ShaderConduit : DisplayConduit
             lastGood[doc.RuntimeSerialNumber] = program;
             return true;
         }
-        if (gpu.CompileError(program) == null) return false; // e.g. a pass we can't draw in
+        if (gpu.CompileError(program) == null && !gpu.Building(program)) return false; // e.g. a pass we can't draw in
         return lastGood.TryGetValue(doc.RuntimeSerialNumber, out var good) && good.Hash != program.Hash &&
                good.Layout.Length > 0 && good.Layout == program.Layout && gpu.Draw(dp, good, uniforms);
     }
@@ -95,6 +96,8 @@ public sealed class ShaderConduit : DisplayConduit
             ControlOutlines.Draw(dp, e.RhinoDoc, selected: true);
             var (r, _) = BadgeRect(dp);
             dp.Draw2dText(Badge, System.Drawing.Color.FromArgb(30, 30, 30), new Point2d((r.Left + r.Right) * 0.5, (r.Top + r.Bottom) * 0.5), true, BadgeTextHeight, "Arial");
+            if (FrepScene.Get(e.RhinoDoc).Program is { } program && GpuBackends.For(dp)!.Building(program))
+                dp.Draw2dText(Compiling, System.Drawing.Color.FromArgb(30, 30, 30), new Point2d(r.Right + BadgeMargin, (r.Top + r.Bottom) * 0.5 - BadgeTextHeight * 0.5), false, BadgeTextHeight, "Arial");
         }
         catch (Exception ex)
         {
