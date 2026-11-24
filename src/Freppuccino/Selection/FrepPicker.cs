@@ -66,14 +66,16 @@ public sealed class FrepPicker : MouseCallback
         if (e.ShiftKeyDown && sessions == 0)
         {
             // Leaf: the nearest control instance. A miss is left to Rhino (Shift+click = add to its selection).
-            var leaf = PickInstance(doc, vp, client, out var ambiguous);
+            var leaf = PickOutline(doc, vp, client, rootsToo: false, out var ambiguous)?.Instance;
+            if (leaf == null && !ambiguous) leaf = PickInstance(doc, vp, client, out ambiguous);
             if (leaf == null && !ambiguous) return;
             e.Cancel = true;
             pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false);
             return;
         }
 
-        var hit = PickRoot(doc, vp, client);
+        var outline = PickOutline(doc, vp, client, rootsToo: true, out _);
+        var hit = outline is { } o ? o.Root ?? o.Instance!.Root : PickRoot(doc, vp, client);
         if (hit == null)
         {
             // An exposed control (e.g. a cutter's face outside the result) selects the root it belongs to.
@@ -172,6 +174,52 @@ public sealed class FrepPicker : MouseCallback
         return best.Inst;
     }
 
+
+    const double OutlinePixels = 3;
+    static readonly Vector2d[] Ring = [.. Enumerable.Range(0, 8).Select(i => new Vector2d(Math.Cos(i * Math.PI / 4), Math.Sin(i * Math.PI / 4)))];
+
+    public static (FrepOperand? Root, FrepInstance? Instance)? PickOutline(RhinoDoc doc, RhinoViewport vp, Point2d client, bool rootsToo, out bool ambiguous)
+    {
+        ambiguous = false;
+        var scene = FrepScene.Get(doc);
+        var rays = Ring.Select(d => Ray(vp, client + d * OutlinePixels)).Prepend(Ray(vp, client)).ToArray();
+        var hits = new List<(FrepOperand Root, FrepInstance? Inst, double T)>();
+        foreach (var (inst, field, box) in InstanceFields(scene))
+        {
+            if (doc.Objects.FindId(inst.Object) is not { IsLocked: false, IsHidden: false }) continue;
+            if (OutlineHit(field, box, rays) is { } t) hits.Add((inst.Root, inst, t));
+        }
+        if (rootsToo && scene.Program != null)
+            foreach (var (root, field, box) in RootFields(scene))
+                if (OutlineHit(field, box, rays) is { } t) hits.Add((root, null, t));
+        if (hits.Count == 0) return null;
+
+        FrepOperand? frontRoot = rootsToo ? PickRoot(doc, vp, client) : null;
+        FrepInstance? frontInst = rootsToo ? null : PickInstance(doc, vp, client, out _);
+        bool Front((FrepOperand Root, FrepInstance? Inst, double T) h) => rootsToo
+            ? h.Root == frontRoot
+            : frontInst != null && h.Inst != null && h.Inst.SamePath(frontInst);
+        var best = hits.OrderBy(Front).ThenBy(h => h.T).First();
+
+        if (best.Inst is { } chosen)
+        {
+            double tieTol = 4 * (rays[0].EpsConst + rays[0].EpsSlope * best.T);
+            ambiguous = hits.Any(h => h.Inst != null && Math.Abs(h.T - best.T) <= tieTol &&
+                (h.Inst.Root != chosen.Root || h.Inst.Object != chosen.Object || !FrepInstances.Same(h.Inst.T, chosen.T)));
+            if (ambiguous) return null;
+        }
+        return best.Inst != null ? (null, best.Inst) : (best.Root, null);
+    }
+
+    static double? OutlineHit(FrepField f, (V3 Min, V3 Max) box, PickRay[] rays)
+    {
+        double? nearest = null;
+        bool missed = false;
+        foreach (var r in rays)
+            if (March(f, box, r) is { } t) nearest = Math.Min(nearest ?? t, t);
+            else missed = true;
+        return missed ? nearest : null;
+    }
 
     static void UiController_ClearNodes(RhinoDoc doc) => Ui.UiController.SetSelectedNodes(doc, []);
 
