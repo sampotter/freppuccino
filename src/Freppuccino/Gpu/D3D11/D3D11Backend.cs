@@ -30,7 +30,8 @@ public sealed class D3D11Backend : IGpuBackend
     readonly Dictionary<string, Program> programs = new();
     readonly Dictionary<string, string> failed = new(); // hash → error; never retried (cleared with the device)
     readonly HashSet<string> logged = new();
-    readonly Dictionary<string, Task<Bytecode>> building = new();
+    (string Hash, Task<Bytecode> Task)? running, finished;
+    ShaderSource? waiting;
 
     IntPtr device;          // Rhino's, not owned; identity only (cache key)
     IntPtr device1;         // ours (QI'd)
@@ -213,23 +214,55 @@ public sealed class D3D11Backend : IGpuBackend
         return new Bytecode(vs, ps, clock.Elapsed);
     });
 
-    public bool Building(ShaderSource program) => building.ContainsKey(program.Hash);
+    public bool Building(ShaderSource program) => running?.Hash == program.Hash || waiting?.Hash == program.Hash;
+
+    void Start(ShaderSource src)
+    {
+        var task = StartBuild(src);
+        running = (src.Hash, task);
+        task.ContinueWith(_ => RhinoApp.InvokeOnUiThread(() =>
+        {
+            if (running?.Task == task) { finished = running; running = null; }
+            StartWaiting();
+            foreach (var doc in RhinoDoc.OpenDocuments()) doc.Views.Redraw();
+        }), TaskScheduler.Default);
+    }
+
+    void StartWaiting()
+    {
+        if (running != null || waiting is not { } next) return;
+        waiting = null;
+        Start(next);
+    }
 
     [SupportedOSPlatform("windows")]
     Program? GetProgram(ShaderSource src, bool wait = false)
     {
         if (programs.TryGetValue(src.Hash, out var p)) return p;
         if (failed.ContainsKey(src.Hash)) return null;
-        if (!building.TryGetValue(src.Hash, out var task))
+        Task<Bytecode> task;
+        if (finished is { } f && f.Hash == src.Hash)
         {
-            building[src.Hash] = task = StartBuild(src);
-            task.ContinueWith(_ => RhinoApp.InvokeOnUiThread(() =>
-            {
-                foreach (var doc in RhinoDoc.OpenDocuments()) doc.Views.Redraw();
-            }), TaskScheduler.Default);
+            task = f.Task;
+            finished = null;
         }
-        if (!task.IsCompleted && !wait) return null;
-        building.Remove(src.Hash);
+        else if (running is { } r && r.Hash == src.Hash && (wait || r.Task.IsCompleted))
+        {
+            task = r.Task;
+            running = null;
+            StartWaiting();
+        }
+        else if (wait)
+        {
+            if (waiting?.Hash == src.Hash) waiting = null;
+            task = StartBuild(src);
+        }
+        else
+        {
+            if (running == null) Start(src);
+            else if (running.Value.Hash != src.Hash) waiting = src;
+            return null;
+        }
         IntPtr vs = IntPtr.Zero, ps = IntPtr.Zero;
         try
         {
