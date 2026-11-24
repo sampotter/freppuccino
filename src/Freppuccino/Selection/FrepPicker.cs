@@ -66,15 +66,27 @@ public sealed class FrepPicker : MouseCallback
         if (e.ShiftKeyDown && sessions == 0)
         {
             // Leaf: the nearest control instance. A miss is left to Rhino (Shift+click = add to its selection).
-            var leaf = PickOutline(doc, vp, client, rootsToo: false, out var ambiguous)?.Instance;
+            var leaf = PickOutline(doc, vp, client, rootsToo: false, out var ambiguous, out var shared)?.Instance;
+            string? note = null;
+            if (shared.Count > 1)
+            {
+                int i = cycle is { } c && c.At.DistanceTo(client) <= OutlinePixels && c.Set.Count == shared.Count &&
+                        c.Set.Zip(shared).All(x => x.First.SamePath(x.Second)) &&
+                        FrepSelection.Leaves(doc).Any(l => l.SamePath(c.Set[c.Index]))
+                    ? (c.Index + 1) % shared.Count : 0;
+                cycle = (i == 0 ? client : cycle!.Value.At, shared, i);
+                leaf = shared[i];
+                ambiguous = false;
+                note = $"Freppuccino: selected {Label(doc, leaf)}, {i + 1} of {shared.Count} shapes sharing that outline. Shift+click again for the next.";
+            }
             if (leaf == null && !ambiguous) leaf = PickInstance(doc, vp, client, out ambiguous);
             if (leaf == null && !ambiguous) return;
             e.Cancel = true;
-            pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false);
+            pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false, note);
             return;
         }
 
-        var hit = PickOutline(doc, vp, client, rootsToo: true, out _)?.Root ?? PickRoot(doc, vp, client);
+        var hit = PickOutline(doc, vp, client, rootsToo: true, out _, out _)?.Root ?? PickRoot(doc, vp, client);
         if (hit == null)
         {
             // An exposed control (e.g. a cutter's face outside the result) selects the root it belongs to.
@@ -98,8 +110,12 @@ public sealed class FrepPicker : MouseCallback
         pending = new Pending(doc, root, null, false);
     }
 
-    sealed record Pending(RhinoDoc Doc, FrepOperand? Root, FrepInstance? Leaf, bool Ambiguous);
+    sealed record Pending(RhinoDoc Doc, FrepOperand? Root, FrepInstance? Leaf, bool Ambiguous, string? Note = null);
     Pending? pending;
+    static (Point2d At, List<FrepInstance> Set, int Index)? cycle;
+
+    static string Label(RhinoDoc doc, FrepInstance leaf) =>
+        doc.Objects.FindId(leaf.Object) is { } o ? !string.IsNullOrWhiteSpace(o.Name) ? o.Name : Sdf.SdfUserText.ReadType(o.Attributes)?.ToString() ?? "a shape" : "a shape";
 
     protected override void OnMouseUp(MouseCallbackEventArgs e)
     {
@@ -111,7 +127,11 @@ public sealed class FrepPicker : MouseCallback
             RhinoApp.WriteLine("Freppuccino: several shapes share that outline. Select the one you want in the Freppuccino panel's tree.");
             return;
         }
-        if (p.Leaf != null) FrepSelection.SelectLeaf(p.Doc, p.Leaf, add: false);
+        if (p.Leaf != null)
+        {
+            FrepSelection.SelectLeaf(p.Doc, p.Leaf, add: false);
+            if (p.Note != null) RhinoApp.WriteLine(p.Note);
+        }
         else if (p.Root is { } r)
         {
             // In a selection session clicks accumulate (a second click on a chosen blend unchooses it).
@@ -174,17 +194,18 @@ public sealed class FrepPicker : MouseCallback
     }
 
 
-    const double OutlinePixels = 8;
+    const double OutlinePixels = 8, SamePixels = 1.5;
     static readonly double[] Radii = [2, 4, 8];
     static readonly Vector2d[] Ring = [.. Enumerable.Range(0, 8).Select(i => new Vector2d(Math.Cos(i * Math.PI / 4), Math.Sin(i * Math.PI / 4)))];
 
-    public static (FrepOperand? Root, FrepInstance? Instance)? PickOutline(RhinoDoc doc, RhinoViewport vp, Point2d client, bool rootsToo, out bool ambiguous)
+    public static (FrepOperand? Root, FrepInstance? Instance)? PickOutline(RhinoDoc doc, RhinoViewport vp, Point2d client, bool rootsToo, out bool ambiguous, out List<FrepInstance> shared)
     {
         ambiguous = false;
+        shared = [];
         var scene = FrepScene.Get(doc);
-        var hits = new List<(FrepOperand Root, FrepInstance? Inst, double Px)>();
+        var hits = new List<(FrepOperand Root, FrepInstance? Inst, Curve[] Curves, double Px)>();
         foreach (var (inst, curves) in ControlOutlines.Pickable(doc, vp))
-            if (ScreenDistance(curves, vp, client) is var px && px <= OutlinePixels) hits.Add((inst.Root, inst, px));
+            if (ScreenDistance(curves, vp, client) is var px && px <= OutlinePixels) hits.Add((inst.Root, inst, curves, px));
         if (rootsToo && scene.Program != null)
         {
             var centre = Ray(vp, client);
@@ -193,7 +214,7 @@ public sealed class FrepPicker : MouseCallback
                 for (int i = 0; i < Radii.Length; i++)
                     if (OutlineHit(field, box, rings[i]) != null)
                     {
-                        hits.Add((root, null, Radii[i]));
+                        hits.Add((root, null, [], Radii[i]));
                         break;
                     }
         }
@@ -201,16 +222,21 @@ public sealed class FrepPicker : MouseCallback
 
         FrepOperand? frontRoot = rootsToo ? PickRoot(doc, vp, client) : null;
         FrepInstance? frontInst = rootsToo ? null : PickInstance(doc, vp, client, out _);
-        bool Front((FrepOperand Root, FrepInstance? Inst, double Px) h) => rootsToo
+        bool Front((FrepOperand Root, FrepInstance? Inst, Curve[] Curves, double Px) h) => rootsToo
             ? h.Root == frontRoot
             : frontInst != null && h.Inst != null && h.Inst.SamePath(frontInst);
         var best = hits.OrderBy(Front).ThenBy(h => h.Px).First();
-
         if (rootsToo) return (best.Root, null);
+
         var chosen = best.Inst!;
-        ambiguous = hits.Any(h => h.Inst != null && Front(h) == Front(best) && h.Px - best.Px <= 0.75 &&
-            (h.Inst.Root != chosen.Root || h.Inst.Object != chosen.Object || !FrepInstances.Same(h.Inst.T, chosen.T)));
-        return ambiguous ? null : (null, chosen);
+        var probes = Radii.Where(r => r > 2).SelectMany(r => Ring.Select(d => client + d * r)).Prepend(client).ToArray();
+        var same = hits.Where(h => h.Inst != null && !h.Inst.SamePath(chosen) && Front(h) == Front(best) && h.Px - best.Px <= SamePixels &&
+            probes.All(q => Math.Abs(ScreenDistance(h.Curves, vp, q) - ScreenDistance(best.Curves, vp, q)) <= SamePixels)).ToList();
+        if (same.Count == 0) return (null, chosen);
+        var order = hits.Select(h => h.Inst).ToList();
+        shared = [.. same.Select(h => h.Inst!).Append(chosen).OrderBy(order.IndexOf)];
+        ambiguous = true;
+        return null;
     }
 
     static readonly ConditionalWeakTable<Curve, Point3d[]> polylines = new();
