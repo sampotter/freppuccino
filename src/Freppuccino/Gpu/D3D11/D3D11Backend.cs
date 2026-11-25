@@ -58,7 +58,7 @@ public sealed class D3D11Backend : IGpuBackend
         if (dev != device) { ReleaseAll(); initOk = Init(dev); }
         if (!initOk) return false;
 
-        var prog = GetProgram(program);
+        var prog = GetProgram(program, wait: !program.Background);
         if (prog == null) return false;
 
         bool swap = StateMode switch

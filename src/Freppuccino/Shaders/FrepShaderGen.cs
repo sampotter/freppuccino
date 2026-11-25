@@ -436,6 +436,7 @@ public static class FrepShaderGen
             cache[key] = src = new ShaderSource(Vertex, Fragment(dataRows, userFns, helpers.ToString(), map.ToString(), color.ToString()))
             {
                 Layout = Layout(prims, warps.Select(id => tree.Find(id)!.Op), ks.Count, mRow.Count, roots.Count),
+                Background = true,
             };
         }
         return (src, ks, warps, rootOps);
