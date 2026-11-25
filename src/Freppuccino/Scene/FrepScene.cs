@@ -284,7 +284,7 @@ public static class FrepScene
         var newOwners = new List<RhinoObject>();
         var newIds = new List<Guid>();
         var settings = new ObjectEnumeratorSettings { VisibleFilter = true, HiddenObjects = false };
-        foreach (var obj in doc.Objects.GetObjectList(settings))
+        foreach (var obj in doc.Objects.GetObjectList(settings).OrderBy(o => o.Id))
         {
             if (!TryRead(obj.Attributes, out var prim)) continue;
             // FFunction whose code doesn't compile: dropped (missing leaf); diagnostics come from compiling SDF.Code again (cached).

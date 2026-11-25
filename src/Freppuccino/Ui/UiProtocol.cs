@@ -126,6 +126,11 @@ public sealed record NoticeMessage(string Level, string Text) : HostMessage
     public override string Type => "notice";
 }
 
+public sealed record CompilingMessage(bool Active) : HostMessage
+{
+    public override string Type => "compiling";
+}
+
 /// Reply to an AiToolRequest with the same CallId: Result on success, Error (for the model) on failure.
 public sealed record AiToolResultMessage(string CallId, bool Ok, JsonNode? Result = null, string? Error = null) : HostMessage
 {

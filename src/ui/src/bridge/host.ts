@@ -66,6 +66,7 @@ export interface HostState {
   theme: Theme
   frepMode: boolean
   notice: Notice | null
+  compiling: number
 }
 
 const transport = createTransport()
@@ -79,9 +80,11 @@ let state: HostState = {
   theme: window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
   frepMode: true,
   notice: null,
+  compiling: 0,
 }
 const listeners = new Set<() => void>()
 let noticeId = 0
+let compileId = 0
 
 function set(patch: Partial<HostState>) {
   state = { ...state, ...patch }
@@ -112,6 +115,9 @@ transport.listen((m) => {
       break
     case 'notice':
       set({ notice: { id: ++noticeId, level: m.level, text: m.text } })
+      break
+    case 'compiling':
+      if (m.active !== state.compiling > 0) set({ compiling: m.active ? ++compileId : 0 })
       break
     case 'aiToolResult': {
       const pending = toolCalls.get(m.callId)

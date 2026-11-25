@@ -13,11 +13,50 @@ namespace Freppuccino.Display;
 public sealed class ShaderConduit : DisplayConduit
 {
     const string Badge = "FREP MODE";
-    const int BadgeTextHeight = 11, BadgeMargin = 10, BadgePadX = 9, BadgePadY = 5;
+    const string Compiling = "Compiling shader…";
+    const int BadgeTextHeight = 11, CompilingTextHeight = 14, BadgeMargin = 10, BadgePadX = 9, BadgePadY = 5, Spokes = 8;
     /// Rhino draws the viewport title (view name, e.g. "Perspective" or a restored named view) in the top-left corner;
     /// the badge sits just below it so long names never run into it. Logical px, y down.
     const int TitleClearance = 28;
     bool loggedFailure, loggedCap;
+
+    static readonly Eto.Forms.UITimer spin = new() { Interval = 1.0 / 12 };
+
+    static ShaderConduit()
+    {
+        spin.Elapsed += (_, _) => RedrawFrepViews();
+        ShaderBuilds.Changed += () =>
+        {
+            if (ShaderBuilds.Active) spin.Start();
+            else spin.Stop();
+        };
+    }
+
+    static void RedrawFrepViews()
+    {
+        foreach (var doc in RhinoDoc.OpenDocuments())
+            foreach (var view in doc.Views.GetViewList(Rhino.Display.ViewTypeFilter.Model))
+                if (view.ActiveViewport.DisplayMode?.Id == FreppuccinoDisplayMode.Id)
+                    view.Redraw();
+    }
+
+    static void DrawCompiling(DisplayPipeline dp, System.Drawing.RectangleF badge)
+    {
+        var ink = System.Drawing.Color.FromArgb(30, 30, 30);
+        float mid = (badge.Top + badge.Bottom) * 0.5f, radius = badge.Height * 0.5f;
+        float cx = badge.Right + BadgeMargin + radius;
+        int lead = (int)(Environment.TickCount64 / 80 % Spokes);
+        for (int i = 0; i < Spokes; i++)
+        {
+            double a = 2 * Math.PI * i / Spokes;
+            float dx = (float)Math.Cos(a), dy = (float)Math.Sin(a);
+            int age = (lead - i + Spokes) % Spokes;
+            var c = System.Drawing.Color.FromArgb(255 - age * 28, ink);
+            dp.Draw2dLine(new System.Drawing.PointF(cx + dx * radius * 0.45f, mid + dy * radius * 0.45f),
+                new System.Drawing.PointF(cx + dx * radius, mid + dy * radius), c, 2.5f);
+        }
+        dp.Draw2dText(Compiling, ink, new Point2d(cx + radius + 6, mid - CompilingTextHeight * 0.5), false, CompilingTextHeight, "Arial");
+    }
 
     /// F-rep control breps aren't drawn by Rhino in this mode; we outline them (ControlOutlines).
     protected override void PreDrawObject(DrawObjectEventArgs e) => ControlOutlines.Suppress(e);
@@ -80,7 +119,7 @@ public sealed class ShaderConduit : DisplayConduit
             lastGood[doc.RuntimeSerialNumber] = program;
             return true;
         }
-        if (gpu.CompileError(program) == null) return false; // e.g. a pass we can't draw in
+        if (gpu.CompileError(program) == null && !gpu.Building(program)) return false; // e.g. a pass we can't draw in
         return lastGood.TryGetValue(doc.RuntimeSerialNumber, out var good) && good.Hash != program.Hash &&
                good.Layout.Length > 0 && good.Layout == program.Layout && gpu.Draw(dp, good, uniforms);
     }
@@ -95,6 +134,8 @@ public sealed class ShaderConduit : DisplayConduit
             ControlOutlines.Draw(dp, e.RhinoDoc, selected: true);
             var (r, _) = BadgeRect(dp);
             dp.Draw2dText(Badge, System.Drawing.Color.FromArgb(30, 30, 30), new Point2d((r.Left + r.Right) * 0.5, (r.Top + r.Bottom) * 0.5), true, BadgeTextHeight, "Arial");
+            if (FrepScene.Get(e.RhinoDoc).Program is { } program && GpuBackends.For(dp)!.Building(program))
+                DrawCompiling(dp, r);
         }
         catch (Exception ex)
         {

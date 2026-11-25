@@ -30,6 +30,8 @@ public sealed class D3D11Backend : IGpuBackend
     readonly Dictionary<string, Program> programs = new();
     readonly Dictionary<string, string> failed = new(); // hash → error; never retried (cleared with the device)
     readonly HashSet<string> logged = new();
+    (string Hash, Task<Bytecode> Task)? running, finished;
+    ShaderSource? waiting;
 
     IntPtr device;          // Rhino's, not owned; identity only (cache key)
     IntPtr device1;         // ours (QI'd)
@@ -56,7 +58,7 @@ public sealed class D3D11Backend : IGpuBackend
         if (dev != device) { ReleaseAll(); initOk = Init(dev); }
         if (!initOk) return false;
 
-        var prog = GetProgram(program);
+        var prog = GetProgram(program, wait: !program.Background);
         if (prog == null) return false;
 
         bool swap = StateMode switch
@@ -201,17 +203,78 @@ public sealed class D3D11Backend : IGpuBackend
         OMSetDepthStencilState(ctx, dss, 0);
     }
 
+    sealed record Bytecode(byte[] Vs, byte[] Ps, TimeSpan Took);
+
+    static Task<Bytecode> StartBuild(ShaderSource src) => Task.Run(() =>
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var tag = src.Hash[..8];
+        var vs = D3D11Native.Compile(ShaderCompiler.ToHlsl(ShaderCompiler.ToSpirv(src.Vertex, ShaderStage.Vertex)), "main", "vs_5_0", $"freppucino_{tag}.vert.hlsl");
+        var ps = D3D11Native.Compile(ShaderCompiler.ToHlsl(ShaderCompiler.ToSpirv(src.Fragment, ShaderStage.Fragment)), "main", "ps_5_0", $"freppucino_{tag}.frag.hlsl");
+        return new Bytecode(vs, ps, clock.Elapsed);
+    });
+
+    public bool Building(ShaderSource program) => running?.Hash == program.Hash || waiting?.Hash == program.Hash;
+
+    void Start(ShaderSource src)
+    {
+        var task = StartBuild(src);
+        running = (src.Hash, task);
+        task.ContinueWith(_ => RhinoApp.InvokeOnUiThread(() =>
+        {
+            if (running?.Task == task) { finished = running; running = null; }
+            StartWaiting();
+            Report();
+            foreach (var doc in RhinoDoc.OpenDocuments()) doc.Views.Redraw();
+        }), TaskScheduler.Default);
+    }
+
+    void Report() => ShaderBuilds.Set(running != null || waiting != null);
+
+    void StartWaiting()
+    {
+        if (running != null || waiting is not { } next) return;
+        waiting = null;
+        Start(next);
+    }
+
     [SupportedOSPlatform("windows")]
-    Program? GetProgram(ShaderSource src)
+    Program? GetProgram(ShaderSource src, bool wait = false)
     {
         if (programs.TryGetValue(src.Hash, out var p)) return p;
         if (failed.ContainsKey(src.Hash)) return null;
+        Task<Bytecode> task;
+        if (finished is { } f && f.Hash == src.Hash)
+        {
+            task = f.Task;
+            finished = null;
+        }
+        else if (running is { } r && r.Hash == src.Hash && (wait || r.Task.IsCompleted))
+        {
+            task = r.Task;
+            running = null;
+            StartWaiting();
+            Report();
+        }
+        else if (wait)
+        {
+            if (waiting?.Hash == src.Hash) waiting = null;
+            Report();
+            task = StartBuild(src);
+        }
+        else
+        {
+            if (running == null) Start(src);
+            else if (running.Value.Hash != src.Hash) waiting = src;
+            Report();
+            return null;
+        }
         IntPtr vs = IntPtr.Zero, ps = IntPtr.Zero;
         try
         {
             var tag = src.Hash[..8];
-            var vsCode = D3D11Native.Compile(ShaderCompiler.ToHlsl(ShaderCompiler.ToSpirv(src.Vertex, ShaderStage.Vertex)), "main", "vs_5_0", $"freppucino_{tag}.vert.hlsl");
-            var psCode = D3D11Native.Compile(ShaderCompiler.ToHlsl(ShaderCompiler.ToSpirv(src.Fragment, ShaderStage.Fragment)), "main", "ps_5_0", $"freppucino_{tag}.frag.hlsl");
+            var (vsCode, psCode, took) = task.GetAwaiter().GetResult();
+            if (took.TotalSeconds >= 5) RhinoApp.WriteLine($"Freppuccino: viewport shader ready ({took.TotalSeconds:0} s to compile).");
             Check(CreateVertexShader(device, vsCode, out vs), "CreateVertexShader");
             Check(CreatePixelShader(device, psCode, out ps), "CreatePixelShader");
             SetName(vs, $"Freppuccino VS {tag}"); SetName(ps, $"Freppuccino PS {tag}");
@@ -245,7 +308,7 @@ public sealed class D3D11Backend : IGpuBackend
     public string? Compile(ShaderSource program)
     {
         if (!OperatingSystem.IsWindows() || !initOk) return null;
-        try { GetProgram(program); }
+        try { GetProgram(program, wait: true); }
         catch (Exception ex) { LogOnce("compile:" + ex.GetType().Name, "Freppuccino D3D11: " + ex); }
         return CompileError(program);
     }

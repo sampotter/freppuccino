@@ -223,6 +223,7 @@ static unsafe class D3D11Native
     // ---- d3dcompiler_47.dll (in System32 on Win10+). Loaded lazily, fail soft.
     static delegate* unmanaged<void*, nuint, byte*, void*, void*, byte*, byte*, uint, uint, IntPtr*, IntPtr*, int> d3dCompile;
     static bool d3dCompileTried;
+    static readonly object d3dCompileLock = new();
 
     public const uint D3DCOMPILE_OPTIMIZATION_LEVEL3 = 1 << 15;
 
@@ -230,12 +231,13 @@ static unsafe class D3D11Native
     /// Returns bytecode or throws with the compiler log.
     public static byte[] Compile(string hlsl, string entry, string target, string sourceName)
     {
-        if (!d3dCompileTried)
-        {
-            d3dCompileTried = true;
-            if (NativeLibrary.TryLoad("d3dcompiler_47.dll", out var lib) && NativeLibrary.TryGetExport(lib, "D3DCompile", out var fn))
-                d3dCompile = (delegate* unmanaged<void*, nuint, byte*, void*, void*, byte*, byte*, uint, uint, IntPtr*, IntPtr*, int>)fn;
-        }
+        lock (d3dCompileLock)
+            if (!d3dCompileTried)
+            {
+                if (NativeLibrary.TryLoad("d3dcompiler_47.dll", out var lib) && NativeLibrary.TryGetExport(lib, "D3DCompile", out var fn))
+                    d3dCompile = (delegate* unmanaged<void*, nuint, byte*, void*, void*, byte*, byte*, uint, uint, IntPtr*, IntPtr*, int>)fn;
+                d3dCompileTried = true;
+            }
         if (d3dCompile == null) throw new InvalidOperationException("d3dcompiler_47.dll / D3DCompile not available");
 
         var src = System.Text.Encoding.UTF8.GetBytes(hlsl);

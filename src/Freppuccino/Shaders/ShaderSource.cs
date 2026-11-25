@@ -10,4 +10,5 @@ public sealed record ShaderSource(string Vertex, string Fragment, uint VertexCou
     public string Hash { get; } = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(Vertex + "\0" + Fragment)));
     /// Uniform data layout id (FrepShaderGen); programs with the same non-empty Layout can draw each other's uniforms.
     public string Layout { get; init; } = "";
+    public bool Background { get; init; }
 }
