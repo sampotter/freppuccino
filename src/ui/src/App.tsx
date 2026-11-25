@@ -140,8 +140,10 @@ export default function App() {
         <AiPanel />
       </div>
 
-      <div className="pointer-events-none absolute inset-x-3 bottom-3 flex flex-col gap-2 *:pointer-events-auto">
+      <div className="absolute inset-x-3 top-14">
         <CompileToast />
+      </div>
+      <div className="absolute inset-x-3 bottom-3">
         <NoticeToast />
       </div>
     </div>
