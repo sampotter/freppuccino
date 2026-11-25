@@ -404,7 +404,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         return n with { Operands = ops.ToImmutable() };
     }
 
-    const int Major = 1, Minor = 3; // 1.1: per-node Hidden; 1.2: Ref + Params; 1.3: Matrix
+    const int Major = 1, Minor = 4; // 1.1: per-node Hidden; 1.2: Ref + Params; 1.3: Matrix; 1.4: followed by a shader cache
 
     public void Write(BinaryArchiveWriter w)
     {
@@ -439,9 +439,9 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         }
     }
 
-    public static FrepTree Read(BinaryArchiveReader r)
+    public static FrepTree Read(BinaryArchiveReader r, out int minor)
     {
-        r.Read3dmChunkVersion(out var major, out var minor);
+        r.Read3dmChunkVersion(out var major, out minor);
         if (major != Major) throw new InvalidDataException($"F-rep tree version {major} unsupported");
         int nextId = r.ReadInt();
         int count = r.ReadInt();

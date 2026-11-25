@@ -42,10 +42,17 @@ public class FreppuccinoPlugin : PlugIn
 
     // CSG tree persisted in the .3dm as plugin data. Skipped for export-selected (leaf ids would dangle) and import/merge (node ids would collide).
     protected override bool ShouldCallWriteDocument(FileWriteOptions options) =>
-        !options.WriteSelectedObjectsOnly && !options.WriteGeometryOnly && FrepTrees.Get(options.RhinoDoc).Nodes.Count > 0;
+        !options.WriteSelectedObjectsOnly && !options.WriteGeometryOnly &&
+        (FrepTrees.Get(options.RhinoDoc).Nodes.Count > 0 || StoredShader(options) != null);
 
-    protected override void WriteDocument(RhinoDoc doc, BinaryArchiveWriter archive, FileWriteOptions options) =>
+    protected override void WriteDocument(RhinoDoc doc, BinaryArchiveWriter archive, FileWriteOptions options)
+    {
         FrepTrees.Get(doc).Write(archive);
+        ShaderCache.Write(archive, StoredShader(options));
+    }
+
+    static string? StoredShader(FileWriteOptions options) =>
+        options.IncludeRenderMeshes && FrepScene.Get(options.RhinoDoc).Program?.Hash is { } hash && ShaderCache.Has(hash) ? hash : null;
 
     protected override void ReadDocument(RhinoDoc doc, BinaryArchiveReader archive, FileReadOptions options)
     {
@@ -54,7 +61,11 @@ public class FreppuccinoPlugin : PlugIn
             RhinoApp.WriteLine("Freppuccino: F-rep tree not imported (import/merge unsupported).");
             return;
         }
-        FrepTrees.Apply(doc, FrepTree.Read(archive));
+        var tree = FrepTree.Read(archive, out var minor);
+        if (minor >= 4)
+            try { ShaderCache.Read(archive); }
+            catch (Exception ex) { RhinoApp.WriteLine($"Freppuccino: the shader saved in this file could not be read ({ex.Message}); it will be compiled."); }
+        FrepTrees.Apply(doc, tree);
     }
 
     protected override void OnShutdown()
