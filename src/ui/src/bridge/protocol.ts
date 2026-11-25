@@ -73,6 +73,7 @@ export type HostMessage =
   /** selected primitives (Rhino selection) + operation nodes (kept by the host) */
   | { type: 'selection'; ids: Id[] }
   | { type: 'notice'; level: 'info' | 'warning' | 'error'; text: string }
+  | { type: 'compiling'; active: boolean }
   /** Reply to an aiTool request (same callId). error is meant for the model. */
   | { type: 'aiToolResult'; callId: string; ok: boolean; result?: unknown; error?: string }
 

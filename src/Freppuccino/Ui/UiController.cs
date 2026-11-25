@@ -4,6 +4,7 @@ using Freppuccino.Ai;
 using Freppuccino.Commands;
 using Freppuccino.Csg;
 using Freppuccino.Display;
+using Freppuccino.Gpu;
 using Freppuccino.Sdf;
 using Rhino;
 using Rhino.Commands;
@@ -99,7 +100,10 @@ public sealed class UiController : IDisposable
         RhinoApp.Idle += OnIdle;
         RhinoApp.EscapeKeyPressed += OnEscape;
         Command.BeginCommand += OnBeginCommand;
+        ShaderBuilds.Changed += OnShaderBuilds;
     }
+
+    void OnShaderBuilds() => web.Send(new CompilingMessage(ShaderBuilds.Active));
 
     public void Dispose()
     {
@@ -113,6 +117,7 @@ public sealed class UiController : IDisposable
         RhinoDoc.ReplaceRhinoObject -= OnReplaceObject;
         RhinoDoc.ModifyObjectAttributes -= OnModifyAttributes;
         FrepTrees.Changed -= OnTreeChanged;
+        ShaderBuilds.Changed -= OnShaderBuilds;
         NodeSelectionChanged -= OnNodeSelectionChanged;
         RhinoApp.Idle -= OnIdle;
         RhinoApp.EscapeKeyPressed -= OnEscape;
@@ -431,6 +436,7 @@ public sealed class UiController : IDisposable
             {
                 case "ready":
                     SendState(doc);
+                    OnShaderBuilds();
                     break;
                 case "select":
                     Select(doc, Parse<SelectRequest>(message));

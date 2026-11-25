@@ -224,9 +224,12 @@ public sealed class D3D11Backend : IGpuBackend
         {
             if (running?.Task == task) { finished = running; running = null; }
             StartWaiting();
+            Report();
             foreach (var doc in RhinoDoc.OpenDocuments()) doc.Views.Redraw();
         }), TaskScheduler.Default);
     }
+
+    void Report() => ShaderBuilds.Set(running != null || waiting != null);
 
     void StartWaiting()
     {
@@ -251,16 +254,19 @@ public sealed class D3D11Backend : IGpuBackend
             task = r.Task;
             running = null;
             StartWaiting();
+            Report();
         }
         else if (wait)
         {
             if (waiting?.Hash == src.Hash) waiting = null;
+            Report();
             task = StartBuild(src);
         }
         else
         {
             if (running == null) Start(src);
             else if (running.Value.Hash != src.Hash) waiting = src;
+            Report();
             return null;
         }
         IntPtr vs = IntPtr.Zero, ps = IntPtr.Zero;

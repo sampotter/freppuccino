@@ -1,4 +1,4 @@
-import { Code2, Sparkles, X } from 'lucide-react'
+import { Code2, Loader2, Sparkles, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type RefObject } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -140,7 +140,28 @@ export default function App() {
         <AiPanel />
       </div>
 
-      <NoticeToast />
+      <div className="pointer-events-none absolute inset-x-3 bottom-3 flex flex-col gap-2 *:pointer-events-auto">
+        <CompileToast />
+        <NoticeToast />
+      </div>
+    </div>
+  )
+}
+
+function CompileToast() {
+  const compiling = useHost((s) => s.compiling)
+  const [dismissed, setDismissed] = useState(0)
+  if (!compiling || dismissed === compiling) return null
+  return (
+    <div
+      role="status"
+      className="type-small flex items-center gap-2 rounded-2xl border-2 border-ink bg-popover py-1.5 pr-1.5 pl-3 text-popover-foreground shadow-float"
+    >
+      <Loader2 className="size-4 shrink-0 animate-spin" />
+      <span className="flex-1">Compiling shader… (Happens when a model opens and when you change the model tree)</span>
+      <Button variant="ghost" size="icon-xs" className="rounded-full" aria-label="Dismiss" onClick={() => setDismissed(compiling)}>
+        <X />
+      </Button>
     </div>
   )
 }
@@ -209,7 +230,7 @@ function NoticeToast() {
     <div
       role="status"
       className={cn(
-        'type-small absolute inset-x-3 bottom-3 flex items-center gap-2 rounded-full border-2 border-ink bg-popover py-1.5 pr-1.5 pl-4 text-popover-foreground shadow-float',
+        'type-small flex items-center gap-2 rounded-full border-2 border-ink bg-popover py-1.5 pr-1.5 pl-4 text-popover-foreground shadow-float',
         notice.level === 'error' && 'border-destructive text-destructive',
       )}
     >
