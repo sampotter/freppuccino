@@ -283,7 +283,7 @@ public sealed class D3D11Backend : IGpuBackend
             var (vsCode, psCode, took) = task.GetAwaiter().GetResult();
             if (took.TotalSeconds >= 5) RhinoApp.WriteLine($"Freppuccino: viewport shader ready ({took.TotalSeconds:0} s to compile).");
             var made = Create(src.Hash, vsCode, psCode);
-            ShaderCache.Add(src.Hash, vsCode, psCode);
+            if (src.Background) ShaderCache.Add(src.Hash, vsCode, psCode);
             return made;
         }
         catch (Exception ex)
