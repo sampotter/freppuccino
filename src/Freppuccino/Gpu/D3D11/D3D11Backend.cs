@@ -243,6 +243,15 @@ public sealed class D3D11Backend : IGpuBackend
     {
         if (programs.TryGetValue(src.Hash, out var p)) return p;
         if (failed.ContainsKey(src.Hash)) return null;
+        if (ShaderCache.TryGet(src.Hash, out var stored))
+        {
+            try { return Create(src.Hash, stored.Vs, stored.Ps); }
+            catch (Exception ex)
+            {
+                ShaderCache.Drop(src.Hash);
+                RhinoApp.WriteLine($"Freppuccino: the shader saved in this file was rejected ({ex.Message}); compiling it again.");
+            }
+        }
         Task<Bytecode> task;
         if (finished is { } f && f.Hash == src.Hash)
         {
@@ -269,24 +278,39 @@ public sealed class D3D11Backend : IGpuBackend
             Report();
             return null;
         }
-        IntPtr vs = IntPtr.Zero, ps = IntPtr.Zero;
         try
         {
-            var tag = src.Hash[..8];
             var (vsCode, psCode, took) = task.GetAwaiter().GetResult();
             if (took.TotalSeconds >= 5) RhinoApp.WriteLine($"Freppuccino: viewport shader ready ({took.TotalSeconds:0} s to compile).");
-            Check(CreateVertexShader(device, vsCode, out vs), "CreateVertexShader");
-            Check(CreatePixelShader(device, psCode, out ps), "CreatePixelShader");
-            SetName(vs, $"Freppuccino VS {tag}"); SetName(ps, $"Freppuccino PS {tag}");
-            return programs[src.Hash] = new Program(vs, ps);
+            var made = Create(src.Hash, vsCode, psCode);
+            if (src.Background) ShaderCache.Add(src.Hash, vsCode, psCode);
+            return made;
         }
         catch (Exception ex)
         {
-            SafeRelease(ref vs); SafeRelease(ref ps);
             failed[src.Hash] = ex.Message;
             RhinoApp.WriteLine($"Freppuccino D3D11: shader {src.Hash} failed: {ex.Message}");
             return null;
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    Program Create(string hash, byte[] vsCode, byte[] psCode)
+    {
+        IntPtr vs = IntPtr.Zero, ps = IntPtr.Zero;
+        try
+        {
+            Check(CreateVertexShader(device, vsCode, out vs), "CreateVertexShader");
+            Check(CreatePixelShader(device, psCode, out ps), "CreatePixelShader");
+        }
+        catch
+        {
+            SafeRelease(ref vs); SafeRelease(ref ps);
+            throw;
+        }
+        var tag = hash[..8];
+        SetName(vs, $"Freppuccino VS {tag}"); SetName(ps, $"Freppuccino PS {tag}");
+        return programs[hash] = new Program(vs, ps);
     }
 
     static void Check(int hr, string what) { if (hr < 0) throw new InvalidOperationException($"{what} failed 0x{hr:X8}"); }
