@@ -194,7 +194,7 @@ public sealed class FrepPicker : MouseCallback
     }
 
 
-    const double OutlinePixels = 8, SamePixels = 1.5;
+    const double OutlinePixels = 8, RootOutlinePixels = 4, SamePixels = 1.5;
     static readonly double[] Radii = [2, 4, 8];
     static readonly Vector2d[] Ring = [.. Enumerable.Range(0, 8).Select(i => new Vector2d(Math.Cos(i * Math.PI / 4), Math.Sin(i * Math.PI / 4)))];
 
@@ -203,18 +203,20 @@ public sealed class FrepPicker : MouseCallback
         ambiguous = false;
         shared = [];
         var scene = FrepScene.Get(doc);
+        double limit = rootsToo ? RootOutlinePixels : OutlinePixels;
         var hits = new List<(FrepOperand Root, FrepInstance? Inst, Curve[] Curves, double Px)>();
         foreach (var (inst, curves) in ControlOutlines.Pickable(doc, vp))
-            if (ScreenDistance(curves, vp, client) is var px && px <= OutlinePixels) hits.Add((inst.Root, inst, curves, px));
+            if (ScreenDistance(curves, vp, client) is var px && px <= limit) hits.Add((inst.Root, inst, curves, px));
         if (rootsToo && scene.Program != null)
         {
             var centre = Ray(vp, client);
-            var rings = Radii.Select(r => Ring.Select(d => Ray(vp, client + d * r)).Prepend(centre).ToArray()).ToArray();
+            var radii = Radii.Where(r => r <= limit).ToArray();
+            var rings = radii.Select(r => Ring.Select(d => Ray(vp, client + d * r)).Prepend(centre).ToArray()).ToArray();
             foreach (var (root, field, box) in RootFields(scene))
-                for (int i = 0; i < Radii.Length; i++)
+                for (int i = 0; i < radii.Length; i++)
                     if (OutlineHit(field, box, rings[i]) != null)
                     {
-                        hits.Add((root, null, [], Radii[i]));
+                        hits.Add((root, null, [], radii[i]));
                         break;
                     }
         }
