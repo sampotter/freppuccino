@@ -25,28 +25,76 @@ public sealed class WebViewHost : IDisposable
     internal static readonly bool DevTools = false;
 #endif
 
-    public WebView Control { get; } = new();
+    public WebView Control { get; private set; } = new();
+
+    public event Action? ControlReplaced;
 
     /// Raised on the UI thread with the message's "type" and the whole JSON payload.
     public event Action<string, JsonElement>? MessageReceived;
 
-    readonly IWebTransport transport;
+    IWebTransport transport;
     readonly Uri startUri;
+    readonly string? missingUi;
+    DateTime waitingSince, lastIdle;
+    int recoveries;
+    bool heard, disposed;
 
     public WebViewHost()
     {
-        transport = OperatingSystem.IsWindows()
-            ? new WebView2Transport(Control, AllowNavigation, OpenExternally)
-            : new EtoWebTransport(Control, AllowNavigation, OpenExternally);
-        transport.Received += OnReceived;
-
-        startUri = ResolveStartUri(out var missingUi);
+        transport = CreateTransport();
+        startUri = ResolveStartUri(out missingUi);
         if (missingUi != null)
         {
             Control.LoadHtml(missingUi);
             return;
         }
         transport.Load(startUri);
+        waitingSince = lastIdle = DateTime.UtcNow;
+        if (OperatingSystem.IsWindows() && startUri == transport.PageUri(UiFolder)) RhinoApp.Idle += OnIdle;
+    }
+
+    IWebTransport CreateTransport()
+    {
+        IWebTransport t = OperatingSystem.IsWindows()
+            ? new WebView2Transport(Control, AllowNavigation, OpenExternally)
+            : new EtoWebTransport(Control, AllowNavigation, OpenExternally);
+        t.PageUri(UiFolder);
+        t.Received += OnReceived;
+        t.Lost += () => RhinoApp.InvokeOnUiThread(Recover);
+        return t;
+    }
+
+    void OnIdle(object? sender, EventArgs e)
+    {
+        if (heard) return;
+        var now = DateTime.UtcNow;
+        if (now - lastIdle > TimeSpan.FromSeconds(2) || !Shown) waitingSince = now;
+        lastIdle = now;
+        if (now - waitingSince > TimeSpan.FromSeconds(20)) Recover();
+    }
+
+    bool Shown => Control.Loaded && Control.ControlObject?.GetType().GetProperty("IsVisible")?.GetValue(Control.ControlObject) is not false;
+
+    void Recover()
+    {
+        if (missingUi != null || disposed) return;
+        if (recoveries++ >= 3)
+        {
+            RhinoApp.Idle -= OnIdle;
+            RhinoApp.WriteLine("Freppuccino: the panel's web view keeps failing. Close the Freppuccino panel and run Freppuccino again.");
+            return;
+        }
+        transport.Received -= OnReceived;
+        transport.Dispose();
+        var old = Control;
+        Control = new WebView();
+        transport = CreateTransport();
+        ControlReplaced?.Invoke();
+        old.Dispose();
+        heard = false;
+        waitingSince = lastIdle = DateTime.UtcNow;
+        transport.Load(startUri);
+        RhinoApp.WriteLine("Freppuccino: the panel lost its web view and was reloaded.");
     }
 
     /// Posts a message to the page. Safe to call before the page loads (dropped; the page asks for state on "ready").
@@ -81,6 +129,8 @@ public sealed class WebViewHost : IDisposable
     void OnReceived(string json, string? source)
     {
         if (!IsOurs(source)) return;
+        heard = true;
+        recoveries = 0;
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -123,6 +173,8 @@ public sealed class WebViewHost : IDisposable
 
     public void Dispose()
     {
+        disposed = true;
+        RhinoApp.Idle -= OnIdle;
         transport.Received -= OnReceived;
         transport.Dispose();
         MessageReceived = null;

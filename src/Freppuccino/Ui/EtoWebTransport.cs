@@ -16,6 +16,7 @@ sealed class EtoWebTransport : IWebTransport
     readonly Action<string> openNewWindow;
 
     public event Action<string, string?>? Received;
+    public event Action? Lost { add { } remove { } }
 
     public EtoWebTransport(WebView control, NavigationFilter allowNavigation, Action<string> openNewWindow)
     {

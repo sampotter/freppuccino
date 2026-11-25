@@ -21,6 +21,7 @@ public class FrepPanel : Panel
         web = new WebViewHost();
         controller = new UiController(web);
         Content = web.Control;
+        web.ControlReplaced += () => Content = web.Control;
     }
 
     protected override void Dispose(bool disposing)
