@@ -90,6 +90,7 @@ export default function App() {
           </ToggleGroup>
         </span>
       </header>
+      <CompileToast />
 
       {synced && !frepMode && (
         <div className="flex shrink-0 items-center gap-2 border-b bg-secondary px-4 py-2">
@@ -140,9 +141,6 @@ export default function App() {
         <AiPanel />
       </div>
 
-      <div className="absolute inset-x-3 top-14">
-        <CompileToast />
-      </div>
       <div className="absolute inset-x-3 bottom-3">
         <NoticeToast />
       </div>
@@ -157,7 +155,7 @@ function CompileToast() {
   return (
     <div
       role="status"
-      className="type-small flex items-center gap-2 rounded-2xl border-2 border-ink bg-popover py-1.5 pr-1.5 pl-3 text-popover-foreground shadow-float"
+      className="type-small mx-3 mt-2 flex shrink-0 items-center gap-2 rounded-2xl border-2 border-ink bg-popover py-1.5 pr-1.5 pl-3 text-popover-foreground"
     >
       <Loader2 className="size-4 shrink-0 animate-spin" />
       <span className="flex-1">Compiling shader… (Happens when a model opens and when you change the model tree)</span>
