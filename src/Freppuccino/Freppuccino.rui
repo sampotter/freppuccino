@@ -6,7 +6,13 @@
       <text>
         <locale_1033>Freppuccino</locale_1033>
       </text>
-      <dock_bar_info dpi_scale="0" dock_bar="False" docking="False" horz="False" visible="False" floating="False" mru_float_style="0" bar_id="0" mru_width="0" point_pos="0,0" float_point="0,0" dock_location="right" float_size="0,0" />
+      <tool_bar_group_item guid="4910f2a0-1b4c-46ae-922a-505e83390023" major_version="1" minor_version="1">
+        <text>
+          <locale_1033>Freppuccino</locale_1033>
+        </text>
+        <tool_bar_id>de6e6a34-a315-9c8e-be60-3f4c87d91bd5</tool_bar_id>
+      </tool_bar_group_item>
+      <dock_bar_info dpi_scale="0" dock_bar="False" docking="True" horz="True" visible="True" floating="False" mru_float_style="0" bar_id="0" mru_width="0" point_pos="0,0" float_point="0,0" dock_location="top" float_size="0,0" />
     </tool_bar_group>
   </tool_bar_groups>
   <tool_bars>
