@@ -6,7 +6,13 @@
       <text>
         <locale_1033>Freppuccino</locale_1033>
       </text>
-      <dock_bar_info dpi_scale="0" dock_bar="False" docking="False" horz="False" visible="False" floating="False" mru_float_style="0" bar_id="0" mru_width="0" point_pos="0,0" float_point="0,0" dock_location="right" float_size="0,0" />
+      <tool_bar_group_item guid="4910f2a0-1b4c-46ae-922a-505e83390023" major_version="1" minor_version="1">
+        <text>
+          <locale_1033>Freppuccino</locale_1033>
+        </text>
+        <tool_bar_id>de6e6a34-a315-9c8e-be60-3f4c87d91bd5</tool_bar_id>
+      </tool_bar_group_item>
+      <dock_bar_info dpi_scale="0" dock_bar="False" docking="True" horz="True" visible="True" floating="False" mru_float_style="0" bar_id="0" mru_width="0" point_pos="0,0" float_point="0,0" dock_location="top" float_size="0,0" />
     </tool_bar_group>
   </tool_bar_groups>
   <tool_bars>
@@ -55,6 +61,12 @@
           <locale_1033>Ellipsoid</locale_1033>
         </text>
         <left_macro_id>f670c5f8-e753-9b24-70cb-6d456536f02e</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="0f26c77f-1c2d-40ca-b1d4-31eb222b5011">
+        <text>
+          <locale_1033>Function</locale_1033>
+        </text>
+        <left_macro_id>4178302f-2393-4b09-b4d9-0fbf8de220de</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="faffcca9-ddc4-5762-3526-d1c45e2c15bd" button_style="spacer" />
       <tool_bar_item guid="1e25bcea-02d3-bf50-6264-3f9a5cb0b603">
@@ -200,6 +212,18 @@
         <locale_1033>F-rep ellipsoid</locale_1033>
       </tooltip>
       <script>! _FEllipsoid</script>
+    </macro_item>
+    <macro_item guid="4178302f-2393-4b09-b4d9-0fbf8de220de" bitmap_id="ac7df8f6-5982-4976-9703-d61506a39ff1">
+      <button_text>
+        <locale_1033>Function</locale_1033>
+      </button_text>
+      <menu_text>
+        <locale_1033>Function</locale_1033>
+      </menu_text>
+      <tooltip>
+        <locale_1033>F-rep function</locale_1033>
+      </tooltip>
+      <script>! _FFunction</script>
     </macro_item>
     <macro_item guid="14954803-82f3-f18a-a137-fe6ff2019b40" bitmap_id="2a681bfc-aa2b-3429-6c4b-08329468381b">
       <button_text>
@@ -537,6 +561,24 @@
           <ellipse cx="12" cy="12" rx="8.4" ry="5.2" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
           <path d="M3.6 12 A8.4 2 0 0 0 20.4 12" fill="none" stroke="#FBEFE2" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 1.6" opacity=".5" />
           <ellipse cx="8.8" cy="9.8" rx="1.8" ry="1" fill="#FFFDF9" opacity=".9" transform="rotate(-18 8.8 9.8)" />
+        </svg>
+</dark>
+    </icon>
+    <icon guid="ac7df8f6-5982-4976-9703-d61506a39ff1">
+      <light>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+          <rect x="3.6" y="3.6" width="16.8" height="16.8" rx="3" fill="#FFFDF9" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" />
+          <path d="M4.4 15.2 L19.6 15.2 L19.6 17.4 A2.2 2.2 0 0 1 17.4 19.6 L6.6 19.6 A2.2 2.2 0 0 1 4.4 17.4 Z" fill="#E0954A" opacity=".55" />
+          <path d="M15 7.4 C13.6 6.8 12.2 7.3 11.9 9 L10.6 16.6 C10.3 18.2 9 18.6 7.8 18" fill="none" stroke="#3B2620" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M9.4 11.2 L14 11.2" fill="none" stroke="#3B2620" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+</light>
+      <dark>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+          <rect x="3.6" y="3.6" width="16.8" height="16.8" rx="3" fill="#FFFDF9" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" />
+          <path d="M4.4 15.2 L19.6 15.2 L19.6 17.4 A2.2 2.2 0 0 1 17.4 19.6 L6.6 19.6 A2.2 2.2 0 0 1 4.4 17.4 Z" fill="#E0954A" opacity=".55" />
+          <path d="M15 7.4 C13.6 6.8 12.2 7.3 11.9 9 L10.6 16.6 C10.3 18.2 9 18.6 7.8 18" fill="none" stroke="#3B2620" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M9.4 11.2 L14 11.2" fill="none" stroke="#3B2620" stroke-width="1.6" stroke-linecap="round" />
         </svg>
 </dark>
     </icon>
