@@ -594,7 +594,7 @@ function DeformButtons(props: { repeatId?: Id; offsetId?: Id }) {
   )
 }
 
-/** Icon + label button that runs a Rhino command (Deform grid). */
+/** Icon + label button that runs a Rhino command (Create / Deform grids). */
 function CommandTile(props: { label: string; icon: BrandIconName; command?: AllowedCommand; onClick?: () => void }) {
   return (
     <button
