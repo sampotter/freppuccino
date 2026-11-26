@@ -445,11 +445,16 @@ public static class FrepShaderGen
     /// The shared GLSL library (also callable from user code).
     static string Library => UserFnLibrary.Glsl;
 
+    static string GBuffer => OperatingSystem.IsWindows()
+        ? "layout(location = 1) out vec4 outPos;\nlayout(location = 2) out vec4 outNrm;\n#define GB(pos, nrm) outPos = pos; outNrm = nrm;"
+        : "#define GB(pos, nrm)";
+
     static string Fragment(int dataRows, string userFns, string helpers, string map, string color) => $$"""
         #version 450
         #extension GL_EXT_control_flow_attributes : require
         layout(location = 0) in vec2 vNdc;
         layout(location = 0) out vec4 outColor;
+        {{GBuffer}}
         layout(std140, set = 0, binding = 0) uniform Frame
         {
             vec4 camPos;     // xyz eye; w = 1 perspective, 0 parallel
@@ -675,7 +680,7 @@ public static class FrepShaderGen
             {
                 g /= 4.0 * en;
                 float dist = nearSel * 2.0 * en / max(length(g), 1e-6);
-                if (dist / (2.0 * en) < u.selColor.w) { outColor = vec4(u.selColor.rgb, 1.0); return; }
+                if (dist / (2.0 * en) < u.selColor.w) { outColor = vec4(u.selColor.rgb, 1.0); GB(vec4(0.0, 0.0, 0.0, -2.0), vec4(0.0)); return; }
             }
             if (!hit) discard;
             n = normalize(n);
@@ -684,8 +689,9 @@ public static class FrepShaderGen
             float zeb;
             vec3 col = sceneColor(p, eps * (4.0 + 2.0 * u.params.x), zeb);
             // Zebra stripes are unlit (like Rhino's), so their edges read cleanly.
-            if (u.zebraCfg.x > 0.0 && zeb > 0.5) { outColor = vec4(zebra(rd, n), 1.0); return; }
+            if (u.zebraCfg.x > 0.0 && zeb > 0.5) { outColor = vec4(zebra(rd, n), 1.0); GB(vec4(p, -1.0), vec4(n, 0.0)); return; }
             outColor = vec4(col * mix(GREY, vec3(1.0), n.z * 0.5 + 0.5), 1.0);
+            GB(vec4(p, 1.0), vec4(n, 0.0));
         }
         """;
 

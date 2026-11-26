@@ -25,7 +25,17 @@ public sealed class D3D11Backend : IGpuBackend
     public static D3D11StateMode StateMode { get; set; } =
         Enum.TryParse<D3D11StateMode>(Environment.GetEnvironmentVariable("FREPPUCINO_D3D11_STATE"), true, out var m) ? m : D3D11StateMode.Auto;
 
+    public static bool Occlusion { get; set; } = Environment.GetEnvironmentVariable("FREPPUCCINO_OCCLUSION") != "0";
+
     sealed record Program(IntPtr Vs, IntPtr Ps);
+
+    static readonly IntPtr[] NoViews = new IntPtr[4];
+
+    sealed class Target
+    {
+        public IntPtr Tex, Rtv, Srv;
+        public void Release() { SafeRelease(ref Srv); SafeRelease(ref Rtv); SafeRelease(ref Tex); }
+    }
 
     readonly Dictionary<string, Program> programs = new();
     readonly Dictionary<string, string> failed = new(); // hash → error; never retried (cleared with the device)
@@ -41,16 +51,24 @@ public sealed class D3D11Backend : IGpuBackend
     bool ctxStateFailed;
     int featureLevel;
     bool initOk;
+    IntPtr postVs, occlusionPs, blurPs, compositePs, pointSampler, linearSampler, postCb;
+    bool postFailed;
+    readonly Target gColor = new(), gPos = new(), gNrm = new(), aoA = new(), aoB = new();
+    int targetW, targetH;
 
-    public bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms)
+    public bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, false);
+
+    public bool DrawOccluded(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, Occlusion);
+
+    bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms, bool occluded)
     {
         if (!OperatingSystem.IsWindows()) return false;
-        try { return DrawWin(pipeline, program, uniforms); }
+        try { return DrawWin(pipeline, program, uniforms, occluded); }
         catch (Exception ex) { LogOnce("draw:" + ex.GetType().Name, "Freppuccino D3D11: " + ex); return false; }
     }
 
     [SupportedOSPlatform("windows")]
-    bool DrawWin(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms)
+    bool DrawWin(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms, bool occluded)
     {
         var dev = pipeline.GetDirect3d11Device();
         var ctx = pipeline.GetDirect3d11DeviceContext();
@@ -73,7 +91,9 @@ public sealed class D3D11Backend : IGpuBackend
         if (ann != IntPtr.Zero) BeginEvent(ann, "Freppuccino");
         try
         {
-            if (swap) DrawSwapped(ctx, draw); else DrawManual(ctx, draw);
+            if (swap && occluded && EnsurePost()) DrawOccludedSwapped(ctx, draw);
+            else if (swap) DrawSwapped(ctx, draw);
+            else DrawManual(ctx, draw);
         }
         finally
         {
@@ -144,6 +164,156 @@ public sealed class D3D11Backend : IGpuBackend
             for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
             SafeRelease(ref dsv);
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    void DrawOccludedSwapped(IntPtr ctx, DrawArgs draw)
+    {
+        Span<IntPtr> rtvs = stackalloc IntPtr[MaxRenderTargets];
+        Span<Viewport> vps = stackalloc Viewport[MaxViewports];
+        OMGetRenderTargets(ctx, rtvs, out var dsv);
+        int nvp = RSGetViewports(ctx, vps);
+        IntPtr prev = SwapDeviceContextState(ctx, ctxState, wantPrevious: true);
+        try
+        {
+            var vp = nvp > 0 ? vps[0] : default;
+            int w = (int)vp.Width, h = (int)vp.Height;
+            if (w <= 0 || h <= 0 || !EnsureTargets(w, h))
+            {
+                OMSetRenderTargets(ctx, rtvs, dsv);
+                RSSetViewports(ctx, vps[..nvp]);
+                Bind(ctx, draw);
+                D3D11Native.Draw(ctx, draw.VertexCount, 0);
+                return;
+            }
+            int hw = (w + 1) / 2, hh = (h + 1) / 2;
+
+            ClearRenderTargetView(ctx, gColor.Rtv, 0, 0, 0, 0);
+            ClearRenderTargetView(ctx, gPos.Rtv, 0, 0, 0, 0);
+            ClearRenderTargetView(ctx, gNrm.Rtv, 0, 0, 0, 0);
+            OMSetRenderTargets(ctx, [gColor.Rtv, gPos.Rtv, gNrm.Rtv], IntPtr.Zero);
+            RSSetViewports(ctx, [new Viewport { Width = w, Height = h, MaxDepth = 1 }]);
+            Bind(ctx, draw);
+            D3D11Native.Draw(ctx, draw.VertexCount, 0);
+
+            PSSetSamplers(ctx, 0, [pointSampler, linearSampler]);
+            VSSetShader(ctx, postVs);
+            PSSetConstantBuffer(ctx, 1, postCb);
+            RSSetViewports(ctx, [new Viewport { Width = hw, Height = hh, MaxDepth = 1 }]);
+
+            PostPass(ctx, occlusionPs, aoA.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, IntPtr.Zero], w, h, hw, hh, 0, 0);
+            PostPass(ctx, blurPs, aoB.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, aoA.Srv], w, h, hw, hh, 1, 0);
+            PostPass(ctx, blurPs, aoA.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, aoB.Srv], w, h, hw, hh, 0, 1);
+
+            OMSetRenderTargets(ctx, rtvs, dsv);
+            RSSetViewports(ctx, vps[..nvp]);
+            SetPost(ctx, w, h, hw, hh, 0, 0, vp.X, vp.Y);
+            PSSetShader(ctx, compositePs);
+            PSSetShaderResources(ctx, 0, [gPos.Srv, gNrm.Srv, gColor.Srv, aoA.Srv]);
+            D3D11Native.Draw(ctx, 3, 0);
+        }
+        finally
+        {
+            PSSetShaderResources(ctx, 0, NoViews);
+            OMSetRenderTargets(ctx, ReadOnlySpan<IntPtr>.Empty, IntPtr.Zero);
+            SwapDeviceContextState(ctx, prev, wantPrevious: false);
+            SafeRelease(ref prev);
+            for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
+            SafeRelease(ref dsv);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    void PostPass(IntPtr ctx, IntPtr ps, IntPtr rtv, ReadOnlySpan<IntPtr> srvs, int w, int h, int hw, int hh, float dx, float dy)
+    {
+        Span<IntPtr> none = stackalloc IntPtr[4];
+        PSSetShaderResources(ctx, 0, none);
+        OMSetRenderTargets(ctx, [rtv], IntPtr.Zero);
+        SetPost(ctx, w, h, hw, hh, dx, dy, 0, 0);
+        PSSetShader(ctx, ps);
+        PSSetShaderResources(ctx, 0, srvs);
+        D3D11Native.Draw(ctx, 3, 0);
+        PSSetShaderResources(ctx, 0, none);
+    }
+
+    [SupportedOSPlatform("windows")]
+    void SetPost(IntPtr ctx, int w, int h, int hw, int hh, float dx, float dy, float ox, float oy)
+    {
+        Span<float> v = [w, h, hw, hh, dx, dy, ox, oy];
+        UpdateSubresource(ctx, postCb, System.Runtime.InteropServices.MemoryMarshal.AsBytes(v));
+    }
+
+    [SupportedOSPlatform("windows")]
+    bool EnsurePost()
+    {
+        if (postVs != IntPtr.Zero) return true;
+        if (postFailed) return false;
+        postFailed = true;
+        try
+        {
+            Check(CreateVertexShader(device, D3D11Native.Compile(OcclusionShaders.Vertex, "main", "vs_5_0", "freppuccino_post.vert.hlsl"), out postVs), "CreateVertexShader");
+            Check(CreatePixelShader(device, D3D11Native.Compile(OcclusionShaders.Occlusion, "main", "ps_5_0", "freppuccino_occlusion.hlsl"), out occlusionPs), "CreatePixelShader");
+            Check(CreatePixelShader(device, D3D11Native.Compile(OcclusionShaders.Blur, "main", "ps_5_0", "freppuccino_blur.hlsl"), out blurPs), "CreatePixelShader");
+            Check(CreatePixelShader(device, D3D11Native.Compile(OcclusionShaders.Composite, "main", "ps_5_0", "freppuccino_composite.hlsl"), out compositePs), "CreatePixelShader");
+            Check(CreateSamplerState(device, SamplerDesc.Clamp(false), out pointSampler), "CreateSamplerState");
+            Check(CreateSamplerState(device, SamplerDesc.Clamp(true), out linearSampler), "CreateSamplerState");
+            Check(CreateBuffer(device, new BufferDesc { ByteWidth = 32, Usage = USAGE_DEFAULT, BindFlags = BIND_CONSTANT_BUFFER }, out postCb), "CreateBuffer");
+            postFailed = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogOnce("post", "Freppuccino D3D11: occlusion pass unavailable: " + ex.Message);
+            ReleasePost();
+            return false;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    bool EnsureTargets(int w, int h)
+    {
+        if (w == targetW && h == targetH && gColor.Tex != IntPtr.Zero) return true;
+        ReleaseTargets();
+        try
+        {
+            int hw = (w + 1) / 2, hh = (h + 1) / 2;
+            MakeTarget(gColor, w, h, FORMAT_R16G16B16A16_FLOAT);
+            MakeTarget(gPos, w, h, FORMAT_R32G32B32A32_FLOAT);
+            MakeTarget(gNrm, w, h, FORMAT_R16G16B16A16_FLOAT);
+            MakeTarget(aoA, hw, hh, FORMAT_R16_FLOAT);
+            MakeTarget(aoB, hw, hh, FORMAT_R16_FLOAT);
+            targetW = w; targetH = h;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogOnce("targets", "Freppuccino D3D11: occlusion targets unavailable: " + ex.Message);
+            ReleaseTargets();
+            return false;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    void MakeTarget(Target t, int w, int h, int format)
+    {
+        var desc = new Texture2DDesc { Width = (uint)w, Height = (uint)h, MipLevels = 1, ArraySize = 1, Format = format, SampleCount = 1, Usage = USAGE_DEFAULT, BindFlags = BIND_RENDER_TARGET | BIND_SHADER_RESOURCE };
+        Check(CreateTexture2D(device, desc, out t.Tex), "CreateTexture2D");
+        Check(CreateRenderTargetView(device, t.Tex, out t.Rtv), "CreateRenderTargetView");
+        Check(CreateShaderResourceView(device, t.Tex, out t.Srv), "CreateShaderResourceView");
+    }
+
+    void ReleaseTargets()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        gColor.Release(); gPos.Release(); gNrm.Release(); aoA.Release(); aoB.Release();
+        targetW = targetH = 0;
+    }
+
+    void ReleasePost()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        SafeRelease(ref postVs); SafeRelease(ref occlusionPs); SafeRelease(ref blurPs); SafeRelease(ref compositePs);
+        SafeRelease(ref pointSampler); SafeRelease(ref linearSampler); SafeRelease(ref postCb);
     }
 
     [SupportedOSPlatform("windows")]
@@ -323,6 +493,7 @@ public sealed class D3D11Backend : IGpuBackend
         foreach (var p in programs.Values) { var v = p.Vs; var f = p.Ps; SafeRelease(ref v); SafeRelease(ref f); }
         programs.Clear(); failed.Clear();
         SafeRelease(ref ctxState); ctxStateFailed = false;
+        ReleaseTargets(); ReleasePost(); postFailed = false;
         SafeRelease(ref rs); SafeRelease(ref dss); SafeRelease(ref cb); SafeRelease(ref device1);
         device = IntPtr.Zero; initOk = false;
     }
