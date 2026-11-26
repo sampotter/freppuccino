@@ -49,7 +49,7 @@ export function SceneTree(props: {
   }, [menu])
 
   if (props.nodes.length === 0)
-    return <p className="type-small px-4 py-6 text-center text-muted-foreground">No F-rep objects yet. Create one below.</p>
+    return <p className="type-small px-4 py-6 text-center text-muted-foreground">No F-rep objects yet. Create one from the Freppuccino toolbar.</p>
 
   return (
     <>

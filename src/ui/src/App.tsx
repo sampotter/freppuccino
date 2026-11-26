@@ -117,22 +117,26 @@ export default function App() {
           />
         </ScrollArea>
 
-        <Splitter height={inspectorHeight} setHeight={setInspectorHeight} pane={inspectorRef} />
-        <div
-          ref={inspectorRef}
-          className={cn('shrink-0 overflow-y-auto bg-card', inspectorHeight === null && 'max-h-[65%]')}
-          style={inspectorHeight === null ? undefined : { height: inspectorHeight, maxHeight: `calc(100% - ${RESERVED_ABOVE}px)` }}
-        >
-          <Inspector
-            selected={selected}
-            labels={labels}
-            roots={roots}
-            onEditCode={(id) => {
-              setEditRequest((r) => ({ id, seq: (r?.seq ?? 0) + 1 }))
-              setTab('script')
-            }}
-          />
-        </div>
+        {selected.some((n) => !n.missing) && (
+          <>
+            <Splitter height={inspectorHeight} setHeight={setInspectorHeight} pane={inspectorRef} />
+            <div
+              ref={inspectorRef}
+              className={cn('shrink-0 overflow-y-auto bg-card', inspectorHeight === null && 'max-h-[65%]')}
+              style={inspectorHeight === null ? undefined : { height: inspectorHeight, maxHeight: `calc(100% - ${RESERVED_ABOVE}px)` }}
+            >
+              <Inspector
+                selected={selected}
+                labels={labels}
+                roots={roots}
+                onEditCode={(id) => {
+                  setEditRequest((r) => ({ id, seq: (r?.seq ?? 0) + 1 }))
+                  setTab('script')
+                }}
+              />
+            </div>
+          </>
+        )}
       </div>
       <div className={cn('flex min-h-0 flex-1 flex-col', tab !== 'script' && 'hidden')}>
         <ScriptPanel editRequest={editRequest} onOpenAi={() => setTab('ai')} />

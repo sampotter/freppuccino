@@ -9,7 +9,7 @@ import { ColorField } from '@/components/color-field'
 import { CodeView } from '@/components/code-view'
 import { send, useHost } from '@/bridge/host'
 import type { AllowedCommand, DeformKind, Id, OperationKind, SceneNode } from '@/bridge/protocol'
-import { DEFORMS, OPERATIONS, PRIMITIVES, displayParams, isDeform, typeLabel } from '@/lib/scene'
+import { DEFORMS, OPERATIONS, displayParams, isDeform, typeLabel } from '@/lib/scene'
 
 /** Bottom half of the panel; what it shows depends on the selection (pick order). */
 export function Inspector(props: {
@@ -20,7 +20,7 @@ export function Inspector(props: {
 }) {
   const { labels, roots } = props
   const selected = props.selected.filter((n) => !n.missing)
-  if (selected.length === 0) return <CreateSection />
+  if (selected.length === 0) return null
   const one = selected[0]
   if (selected.length === 1)
     return (
@@ -63,20 +63,6 @@ function Section(props: { title: string; badge?: string; children: React.ReactNo
       </header>
       {props.children}
     </section>
-  )
-}
-
-// ── Nothing selected: create ──
-
-function CreateSection() {
-  return (
-    <Section title="Create">
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-2">
-        {Object.values(PRIMITIVES).map((p) => (
-          <CommandTile key={p.command} label={p.label} icon={p.icon} command={p.command} />
-        ))}
-      </div>
-    </Section>
   )
 }
 
@@ -608,7 +594,7 @@ function DeformButtons(props: { repeatId?: Id; offsetId?: Id }) {
   )
 }
 
-/** Icon + label button that runs a Rhino command (Create / Deform grids). */
+/** Icon + label button that runs a Rhino command (Deform grid). */
 function CommandTile(props: { label: string; icon: BrandIconName; command?: AllowedCommand; onClick?: () => void }) {
   return (
     <button
