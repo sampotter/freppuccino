@@ -37,6 +37,7 @@ public class FreppuccinoPlugin : PlugIn
         Conduit = new ShaderConduit { Enabled = true };
         Panels.RegisterPanel(this, typeof(FrepPanel), FrepPanel.Caption, GetType().Assembly,
             IconResource, PanelType.PerDoc);
+        ToolbarReveal.Install(this);
         return LoadReturnCode.Success;
     }
 
