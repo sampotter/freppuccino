@@ -4,12 +4,19 @@ static class OcclusionShaders
 {
     const string Common = """
         static const float AO_RADIUS = 0.12;
-        static const int AO_SAMPLES = 16;
-        static const float AO_STRENGTH = 0.6;
+        static const float AO_MIN_RADIUS = 0.35;
+        static const int AO_SAMPLES = 12;
+        static const float AO_STRENGTH = 0.4;
+        static const float AO_WIDE_RADIUS = 0.55;
+        static const int AO_WIDE_SAMPLES = 12;
+        static const float AO_WIDE_STRENGTH = 0.45;
         static const float AO_BIAS = 0.03;
+        static const float AO_GRAZING = 0.5;
         static const int BLUR_RADIUS = 6;
         static const float BLUR_SIGMA = 3.5;
         static const float BLUR_DEPTH = 0.02;
+        static const float BLUR_NORMAL = 2.0;
+        static const float BLUR_NORMAL_FLOOR = 0.25;
 
         cbuffer Frame : register(b0) { float4 camPos, camX, camY, camZ, frustum, params, bound; };
         cbuffer Post : register(b1) { float4 size; float4 dir; };
@@ -41,6 +48,28 @@ static class OcclusionShaders
 
     public const string Occlusion = Common + """
 
+        float Term(float3 P, float3 n, float3 t, float3 b, float dP, float spin, float R, int count, float phase)
+        {
+            float occ = 0.0;
+            [loop] for (int k = 0; k < count; k++)
+            {
+                float fk = (k + 0.5) / count;
+                float cosT = sqrt(1.0 - fk), sinT = sqrt(fk);
+                float a = k * 2.3999632 + spin + phase;
+                float rk = frac(k * 0.618034 + 0.31 + phase);
+                float r = R * lerp(AO_MIN_RADIUS, 1.0, rk);
+                float3 d = (t * cos(a) + b * sin(a)) * sinT + n * cosT;
+                float3 q = P + d * r;
+                float2 uv = Project(q);
+                if (any(uv < 0.0) || any(uv > 1.0)) continue;
+                float4 S = gPos.SampleLevel(pointS, uv, 0);
+                if (S.w == 0.0 || S.w < -1.5) continue;
+                float dS = Depth(S.xyz), dQ = Depth(q);
+                if (dS < dQ - AO_BIAS * r) occ += saturate(r / max(abs(dP - dS), 1e-9));
+            }
+            return occ / count;
+        }
+
         float main(float4 sv : SV_Position) : SV_Target
         {
             int2 c = min(int2(sv.xy) * 2, int2(size.xy) - 1);
@@ -50,26 +79,11 @@ static class OcclusionShaders
             float3 t = normalize(cross(n, abs(n.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0)));
             float3 b = cross(n, t);
             float spin = 6.2831853 * frac(52.9829189 * frac(dot(sv.xy, float2(0.06711056, 0.00583715))));
-            float R = AO_RADIUS * bound.w;
             float dP = Depth(P.xyz);
-            float occ = 0.0;
-            [loop] for (int k = 0; k < AO_SAMPLES; k++)
-            {
-                float fk = (k + 0.5) / AO_SAMPLES;
-                float cosT = sqrt(1.0 - fk), sinT = sqrt(fk);
-                float a = k * 2.3999632 + spin;
-                float rk = frac(k * 0.618034 + 0.31);
-                float r = R * lerp(0.08, 1.0, rk * rk);
-                float3 d = (t * cos(a) + b * sin(a)) * sinT + n * cosT;
-                float3 q = P.xyz + d * r;
-                float2 uv = Project(q);
-                if (any(uv < 0.0) || any(uv > 1.0)) continue;
-                float4 S = gPos.SampleLevel(pointS, uv, 0);
-                if (S.w == 0.0 || S.w < -1.5) continue;
-                float dS = Depth(S.xyz), dQ = Depth(q);
-                if (dS < dQ - AO_BIAS * r) occ += saturate(r / max(abs(dP - dS), 1e-9));
-            }
-            return 1.0 - occ / AO_SAMPLES;
+            float fine = Term(P.xyz, n, t, b, dP, spin, AO_RADIUS * bound.w, AO_SAMPLES, 0.0);
+            float wide = Term(P.xyz, n, t, b, dP, spin, AO_WIDE_RADIUS * bound.w, AO_WIDE_SAMPLES, 0.5);
+            float facing = smoothstep(0.0, AO_GRAZING, abs(dot(n, camZ.xyz)));
+            return saturate(1.0 - facing * (AO_STRENGTH * fine + AO_WIDE_STRENGTH * wide));
         }
         """;
 
@@ -94,7 +108,7 @@ static class OcclusionShaders
                 if (S.w <= 0.0) continue;
                 float w = exp(-0.5 * i * i / (BLUR_SIGMA * BLUR_SIGMA));
                 w *= exp(-abs(Depth(S.xyz) - d0) / (BLUR_DEPTH * max(abs(d0), 1e-9)));
-                w *= pow(saturate(dot(gNrm.Load(int3(cs, 0)).xyz, n0)), 4.0);
+                w *= lerp(BLUR_NORMAL_FLOOR, 1.0, pow(saturate(dot(gNrm.Load(int3(cs, 0)).xyz, n0)), BLUR_NORMAL));
                 sum += w * gAo.Load(int3(hs, 0));
                 wsum += w;
             }
@@ -128,12 +142,12 @@ static class OcclusionShaders
                 float2 b = lerp(1.0 - f, f, float2(o));
                 float w = b.x * b.y + 1e-4;
                 w *= exp(-abs(Depth(S.xyz) - d0) / (BLUR_DEPTH * max(abs(d0), 1e-9)));
-                w *= pow(saturate(dot(gNrm.Load(int3(cs, 0)).xyz, n0)), 4.0);
+                w *= lerp(BLUR_NORMAL_FLOOR, 1.0, pow(saturate(dot(gNrm.Load(int3(cs, 0)).xyz, n0)), BLUR_NORMAL));
                 sum += w * gAo.Load(int3(hs, 0));
                 wsum += w;
             }
             float ao = wsum > 1e-6 ? sum / wsum : 1.0;
-            return float4(col.rgb * (1.0 - AO_STRENGTH * (1.0 - ao)), 1.0);
+            return float4(col.rgb * ao, 1.0);
         }
         """;
 }

@@ -150,7 +150,7 @@ public sealed class D3D11Backend : IGpuBackend
         IntPtr prev = SwapDeviceContextState(ctx, ctxState, wantPrevious: true);
         try
         {
-            OMSetRenderTargets(ctx, rtvs, dsv);
+            OMSetRenderTargets(ctx, rtvs[..1], dsv);
             RSSetViewports(ctx, vps[..nvp]);
             Bind(ctx, draw);
             D3D11Native.Draw(ctx, draw.VertexCount, 0);
@@ -180,7 +180,7 @@ public sealed class D3D11Backend : IGpuBackend
             int w = (int)vp.Width, h = (int)vp.Height;
             if (w <= 0 || h <= 0 || !EnsureTargets(w, h))
             {
-                OMSetRenderTargets(ctx, rtvs, dsv);
+                OMSetRenderTargets(ctx, rtvs[..1], dsv);
                 RSSetViewports(ctx, vps[..nvp]);
                 Bind(ctx, draw);
                 D3D11Native.Draw(ctx, draw.VertexCount, 0);
@@ -328,8 +328,11 @@ public sealed class D3D11Backend : IGpuBackend
         IntPtr bs = OMGetBlendState(ctx, bf, out uint mask);
         IntPtr dssOld = OMGetDepthStencilState(ctx, out uint sref);
         IntPtr vcb = draw.Uniforms != null ? VSGetConstantBuffer(ctx, 0) : IntPtr.Zero, pcb = draw.Uniforms != null ? PSGetConstantBuffer(ctx, 0) : IntPtr.Zero;
+        Span<IntPtr> rtvs = stackalloc IntPtr[MaxRenderTargets];
+        OMGetRenderTargets(ctx, rtvs, out var dsv);
         try
         {
+            OMSetRenderTargets(ctx, rtvs[..1], dsv);
             Bind(ctx, draw);
             D3D11Native.Draw(ctx, draw.VertexCount, 0);
         }
@@ -341,6 +344,9 @@ public sealed class D3D11Backend : IGpuBackend
             RSSetState(ctx, rsOld);
             OMSetBlendState(ctx, bs, bf, mask);
             OMSetDepthStencilState(ctx, dssOld, sref);
+            OMSetRenderTargets(ctx, rtvs, dsv);
+            for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
+            SafeRelease(ref dsv);
             if (draw.Uniforms != null) { VSSetConstantBuffer(ctx, 0, vcb); PSSetConstantBuffer(ctx, 0, pcb); SafeRelease(ref vcb); SafeRelease(ref pcb); }
             SafeRelease(ref il); SafeRelease(ref vs); SafeRelease(ref ps); SafeRelease(ref gs); SafeRelease(ref hs); SafeRelease(ref ds);
             SafeRelease(ref rsOld); SafeRelease(ref bs); SafeRelease(ref dssOld);
