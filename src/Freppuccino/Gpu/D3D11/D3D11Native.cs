@@ -321,7 +321,6 @@ struct Viewport { public float X, Y, Width, Height, MinDepth, MaxDepth; }
 [StructLayout(LayoutKind.Sequential)]
 struct BufferDesc { public uint ByteWidth; public int Usage; public uint BindFlags, CPUAccessFlags, MiscFlags, StructureByteStride; }
 
-/// D3D11_TEXTURE2D_DESC (44 bytes)
 [StructLayout(LayoutKind.Sequential)]
 struct Texture2DDesc
 {
@@ -332,7 +331,6 @@ struct Texture2DDesc
     public uint BindFlags, CPUAccessFlags, MiscFlags;
 }
 
-/// D3D11_SAMPLER_DESC (52 bytes)
 [StructLayout(LayoutKind.Sequential)]
 unsafe struct SamplerDesc
 {
