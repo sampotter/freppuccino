@@ -5,7 +5,7 @@ static class OcclusionShaders
     const string Common = """
         static const float AO_RADIUS = 0.12;
         static const int AO_SAMPLES = 16;
-        static const float AO_STRENGTH = 0.85;
+        static const float AO_STRENGTH = 0.6;
         static const float AO_BIAS = 0.03;
         static const int BLUR_RADIUS = 6;
         static const float BLUR_SIGMA = 3.5;
@@ -111,7 +111,28 @@ static class OcclusionShaders
             if (col.a <= 0.0) discard;
             float4 P = gPos.Load(int3(c, 0));
             if (P.w <= 0.0) return float4(col.rgb, 1.0);
-            float ao = gAo.SampleLevel(linearS, (float2(c) + 0.5) / size.xy, 0);
+            float d0 = Depth(P.xyz);
+            float3 n0 = gNrm.Load(int3(c, 0)).xyz;
+            float2 hp = (float2(c) + 0.5) * 0.5 - 0.5;
+            int2 h0 = int2(floor(hp));
+            float2 f = hp - float2(h0);
+            int2 hmax = int2(size.zw) - 1;
+            float sum = 0.0, wsum = 0.0;
+            [unroll] for (int j = 0; j < 4; j++)
+            {
+                int2 o = int2(j & 1, j >> 1);
+                int2 hs = clamp(h0 + o, int2(0, 0), hmax);
+                int2 cs = min(hs * 2, int2(size.xy) - 1);
+                float4 S = gPos.Load(int3(cs, 0));
+                if (S.w <= 0.0) continue;
+                float2 b = lerp(1.0 - f, f, float2(o));
+                float w = b.x * b.y + 1e-4;
+                w *= exp(-abs(Depth(S.xyz) - d0) / (BLUR_DEPTH * max(abs(d0), 1e-9)));
+                w *= pow(saturate(dot(gNrm.Load(int3(cs, 0)).xyz, n0)), 4.0);
+                sum += w * gAo.Load(int3(hs, 0));
+                wsum += w;
+            }
+            float ao = wsum > 1e-6 ? sum / wsum : 1.0;
             return float4(col.rgb * (1.0 - AO_STRENGTH * (1.0 - ao)), 1.0);
         }
         """;
