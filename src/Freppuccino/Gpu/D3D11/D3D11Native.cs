@@ -12,7 +12,8 @@ static unsafe class D3D11Native
     const int QueryInterface = 0, Release = 2;
 
     // ID3D11Device (+ ID3D11Device1)
-    const int Dev_CreateBuffer = 3, Dev_CreateVertexShader = 12, Dev_CreatePixelShader = 15, Dev_CreateDepthStencilState = 21,
+    const int Dev_CreateBuffer = 3, Dev_CreateTexture2D = 5, Dev_CreateShaderResourceView = 7, Dev_CreateRenderTargetView = 9,
+        Dev_CreateBlendState = 20, Dev_CreateSamplerState = 23, Dev_CreateVertexShader = 12, Dev_CreatePixelShader = 15, Dev_CreateDepthStencilState = 21,
         Dev_CreateRasterizerState = 22, Dev_GetFeatureLevel = 37, Dev_GetCreationFlags = 38,
         Dev1_CreateDeviceContextState = 47;
 
@@ -21,7 +22,8 @@ static unsafe class D3D11Native
 
     // ID3D11DeviceContext (+ ID3D11DeviceContext1)
     const int Ctx_VSSetConstantBuffers = 7, Ctx_PSSetConstantBuffers = 16, Ctx_UpdateSubresource = 48,
-        Ctx_VSGetConstantBuffers = 72, Ctx_PSGetConstantBuffers = 77;
+        Ctx_VSGetConstantBuffers = 72, Ctx_PSGetConstantBuffers = 77, Ctx_PSSetShaderResources = 8, Ctx_PSSetSamplers = 10,
+        Ctx_ClearRenderTargetView = 50;
     const int Ctx_PSSetShader = 9, Ctx_VSSetShader = 11, Ctx_Draw = 13, Ctx_IASetInputLayout = 17, Ctx_GSSetShader = 23,
         Ctx_IASetPrimitiveTopology = 24, Ctx_OMSetRenderTargets = 33, Ctx_OMSetBlendState = 35, Ctx_OMSetDepthStencilState = 36,
         Ctx_RSSetState = 43, Ctx_RSSetViewports = 44, Ctx_HSSetShader = 60, Ctx_DSSetShader = 64,
@@ -41,7 +43,8 @@ static unsafe class D3D11Native
     static readonly Guid WKPDID_D3DDebugObjectName = new("429b8c22-9188-4b0c-8742-acb0bf85c200");
 
     public const int USAGE_DEFAULT = 0;
-    public const uint BIND_CONSTANT_BUFFER = 4;
+    public const uint BIND_CONSTANT_BUFFER = 4, BIND_SHADER_RESOURCE = 8, BIND_RENDER_TARGET = 32;
+    public const int FORMAT_R32G32B32A32_FLOAT = 2, FORMAT_R16G16B16A16_FLOAT = 10, FORMAT_R16_FLOAT = 54;
     public const uint SDK_VERSION = 7, CREATE_DEVICE_SINGLETHREADED = 1, CONTEXT_STATE_SINGLETHREADED = 1;
     public const int FEATURE_LEVEL_11_0 = 0xb000, DEVICE_CONTEXT_IMMEDIATE = 0, TOPOLOGY_TRIANGLELIST = 4;
     public const int MaxRenderTargets = 8, MaxViewports = 16;
@@ -90,6 +93,50 @@ static unsafe class D3D11Native
     }
 
     /// Whole-resource update (box null), as required for constant buffers.
+    public static int CreateTexture2D(IntPtr dev, in Texture2DDesc d, out IntPtr tex)
+    {
+        IntPtr r; int hr;
+        fixed (Texture2DDesc* p = &d) hr = ((delegate* unmanaged<IntPtr, Texture2DDesc*, void*, IntPtr*, int>)Vt(dev)[Dev_CreateTexture2D])(dev, p, null, &r);
+        tex = r; return hr;
+    }
+
+    public static int CreateShaderResourceView(IntPtr dev, IntPtr res, out IntPtr srv)
+    {
+        IntPtr r;
+        int hr = ((delegate* unmanaged<IntPtr, IntPtr, void*, IntPtr*, int>)Vt(dev)[Dev_CreateShaderResourceView])(dev, res, null, &r);
+        srv = r; return hr;
+    }
+
+    public static int CreateRenderTargetView(IntPtr dev, IntPtr res, out IntPtr rtv)
+    {
+        IntPtr r;
+        int hr = ((delegate* unmanaged<IntPtr, IntPtr, void*, IntPtr*, int>)Vt(dev)[Dev_CreateRenderTargetView])(dev, res, null, &r);
+        rtv = r; return hr;
+    }
+
+    public static int CreateSamplerState(IntPtr dev, in SamplerDesc d, out IntPtr s)
+    {
+        IntPtr r; int hr;
+        fixed (SamplerDesc* p = &d) hr = ((delegate* unmanaged<IntPtr, SamplerDesc*, IntPtr*, int>)Vt(dev)[Dev_CreateSamplerState])(dev, p, &r);
+        s = r; return hr;
+    }
+
+    public static void PSSetShaderResources(IntPtr c, uint start, ReadOnlySpan<IntPtr> views)
+    {
+        fixed (IntPtr* p = views) ((delegate* unmanaged<IntPtr, uint, uint, IntPtr*, void>)Vt(c)[Ctx_PSSetShaderResources])(c, start, (uint)views.Length, p);
+    }
+
+    public static void PSSetSamplers(IntPtr c, uint start, ReadOnlySpan<IntPtr> samplers)
+    {
+        fixed (IntPtr* p = samplers) ((delegate* unmanaged<IntPtr, uint, uint, IntPtr*, void>)Vt(c)[Ctx_PSSetSamplers])(c, start, (uint)samplers.Length, p);
+    }
+
+    public static void ClearRenderTargetView(IntPtr c, IntPtr rtv, float r, float g, float b, float a)
+    {
+        float* col = stackalloc float[4] { r, g, b, a };
+        ((delegate* unmanaged<IntPtr, IntPtr, float*, void>)Vt(c)[Ctx_ClearRenderTargetView])(c, rtv, col);
+    }
+
     public static void UpdateSubresource(IntPtr c, IntPtr res, ReadOnlySpan<byte> data)
     {
         fixed (byte* p = data) ((delegate* unmanaged<IntPtr, IntPtr, uint, void*, void*, uint, uint, void>)Vt(c)[Ctx_UpdateSubresource])(c, res, 0, null, p, 0, 0);
@@ -273,6 +320,29 @@ struct Viewport { public float X, Y, Width, Height, MinDepth, MaxDepth; }
 /// D3D11_BUFFER_DESC (24 bytes)
 [StructLayout(LayoutKind.Sequential)]
 struct BufferDesc { public uint ByteWidth; public int Usage; public uint BindFlags, CPUAccessFlags, MiscFlags, StructureByteStride; }
+
+[StructLayout(LayoutKind.Sequential)]
+struct Texture2DDesc
+{
+    public uint Width, Height, MipLevels, ArraySize;
+    public int Format;
+    public uint SampleCount, SampleQuality;
+    public int Usage;
+    public uint BindFlags, CPUAccessFlags, MiscFlags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+unsafe struct SamplerDesc
+{
+    public int Filter, AddressU, AddressV, AddressW;
+    public float MipLODBias;
+    public uint MaxAnisotropy;
+    public int ComparisonFunc;
+    public fixed float BorderColor[4];
+    public float MinLOD, MaxLOD;
+
+    public static SamplerDesc Clamp(bool linear) => new() { Filter = linear ? 0x15 : 0, AddressU = 3, AddressV = 3, AddressW = 3, MaxAnisotropy = 1, ComparisonFunc = 1, MaxLOD = float.MaxValue };
+}
 
 /// D3D11_RASTERIZER_DESC (40 bytes)
 [StructLayout(LayoutKind.Sequential)]

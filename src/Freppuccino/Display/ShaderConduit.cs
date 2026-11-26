@@ -114,15 +114,23 @@ public sealed class ShaderConduit : DisplayConduit
     {
         var program = scene.Program!;
         var uniforms = FrepShaderGen.SceneUniforms(dp.Viewport, scene, Selection.FrepSelection.Roots(doc));
-        if (gpu.Draw(dp, program, uniforms))
+        if (DrawProgram(gpu, dp, program, uniforms))
         {
             lastGood[doc.RuntimeSerialNumber] = program;
             return true;
         }
         if (gpu.CompileError(program) == null && !gpu.Building(program)) return false; // e.g. a pass we can't draw in
         return lastGood.TryGetValue(doc.RuntimeSerialNumber, out var good) && good.Hash != program.Hash &&
-               good.Layout.Length > 0 && good.Layout == program.Layout && gpu.Draw(dp, good, uniforms);
+               good.Layout.Length > 0 && good.Layout == program.Layout && DrawProgram(gpu, dp, good, uniforms);
     }
+
+#if RHINO9
+    static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms) =>
+        gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.DrawOccluded(dp, program, uniforms) : gpu.Draw(dp, program, uniforms);
+#else
+    static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms) =>
+        gpu.Draw(dp, program, uniforms);
+#endif
 
     protected override void DrawForeground(DrawEventArgs e)
     {
