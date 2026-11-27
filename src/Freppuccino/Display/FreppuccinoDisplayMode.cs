@@ -78,7 +78,7 @@ public static class FreppuccinoDisplayMode
     {
         if (Id == Guid.Empty || DisplayModeDescription.GetDisplayMode(SourceId(g)) is not { } src) return false;
         var views = RhinoDoc.OpenDocuments().SelectMany(d => d.Views.GetViewList(ViewTypeFilter.All))
-            .Where(v => v.ActiveViewport.DisplayMode?.Id == Id).ToList();
+            .Where(v => v.ActiveViewport.DisplayMode?.Id == Id || restoring.Contains(v.ActiveViewport.Id)).ToList();
         var path = Path.Combine(Path.GetTempPath(), $"freppuccino-mode-{Guid.NewGuid():N}.ini");
         Guid imported = Guid.Empty;
         try
@@ -114,20 +114,32 @@ public static class FreppuccinoDisplayMode
         {
             v.ActiveViewport.DisplayMode = capture ?? m;
             v.Redraw();
+            if (capture != null) restoring.Add(v.ActiveViewport.Id);
         }
-        if (capture == null) return true;
-        void Back(object? sender, EventArgs e)
+        if (capture != null && restoring.Count > 0 && !restoreQueued)
         {
-            RhinoApp.Idle -= Back;
-            foreach (var v in views)
-                if (v.ActiveViewport.DisplayMode?.Id == CaptureId)
-                {
-                    v.ActiveViewport.DisplayMode = m;
-                    v.Redraw();
-                }
+            restoreQueued = true;
+            RhinoApp.Idle += Restore;
         }
-        RhinoApp.Idle += Back;
         return true;
+    }
+
+    static readonly HashSet<Guid> restoring = [];
+    static bool restoreQueued;
+
+    static void Restore(object? sender, EventArgs e)
+    {
+        RhinoApp.Idle -= Restore;
+        restoreQueued = false;
+        var m = DisplayModeDescription.GetDisplayMode(Id);
+        foreach (var v in RhinoDoc.OpenDocuments().SelectMany(d => d.Views.GetViewList(ViewTypeFilter.All)))
+        {
+            var vp = v.ActiveViewport;
+            if (m == null || !restoring.Contains(vp.Id) || vp.DisplayMode?.Id != CaptureId) continue;
+            vp.DisplayMode = m;
+            v.Redraw();
+        }
+        restoring.Clear();
     }
 
     static bool IsCurrentCapture(DisplayModeDescription m) =>

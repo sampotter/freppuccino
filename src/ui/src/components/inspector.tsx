@@ -20,6 +20,7 @@ export function Inspector(props: {
   onEditCode?: (id: Id) => void
 }) {
   const { labels, roots } = props
+  const doc = useHost((s) => s.doc)
   const selected = props.selected.filter((n) => !n.missing)
   if (selected.length === 0) return null
   const one = selected[0]
@@ -35,7 +36,7 @@ export function Inspector(props: {
         ) : isDeform(one.op) ? (
           <DeformSection key={one.id} node={one} labels={labels} />
         ) : (
-          <CombineSection key={one.id} operands={one.children ?? []} labels={labels} existing={one} />
+          <CombineSection key={`${doc}/${one.id}`} operands={one.children ?? []} labels={labels} existing={one} />
         )}
       </>
     )
