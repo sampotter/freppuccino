@@ -3,14 +3,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { BrandIcon, NodeIcon, type BrandIconName } from '@/components/brand-icon'
+import { BrandIcon, NodeIcon } from '@/components/brand-icon'
 import { BlendHint } from '@/components/blend-hint'
 import { ParamSlider } from '@/components/param-slider'
 import { ColorField } from '@/components/color-field'
 import { CodeView } from '@/components/code-view'
 import { send, useHost } from '@/bridge/host'
-import type { AllowedCommand, DeformKind, Id, OperationKind, SceneNode } from '@/bridge/protocol'
-import { DEFORMS, MODES, OPERATIONS, displayParams, isDeform, typeLabel } from '@/lib/scene'
+import type { Id, OperationKind, SceneNode } from '@/bridge/protocol'
+import { OPERATIONS, displayParams, isDeform, typeLabel } from '@/lib/scene'
 
 /** Bottom half of the panel; what it shows depends on the selection (pick order). */
 export function Inspector(props: {
@@ -37,10 +37,6 @@ export function Inspector(props: {
         ) : (
           <CombineSection key={one.id} operands={one.children ?? []} labels={labels} existing={one} />
         )}
-        <DeformButtons
-          repeatId={one.op === 'repeat' ? one.id : undefined}
-          offsetId={one.op === 'group' ? one.id : undefined}
-        />
       </>
     )
   const canCombine = selected.length >= 2 && selected.every((n) => roots.has(n.id))
@@ -295,9 +291,13 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
   // Swapping only makes sense for two new operands; otherwise pick order decides the base.
   const canSwap = !existing && props.operands.length === 2
   const operands = canSwap && swapped ? [...props.operands].reverse() : props.operands
-  const role = (i: number) =>
-    existing ? (i === 0 ? 'Base' : MODES[existing.modes?.[i] ?? 'add'].label)
-    : op === 'subtract' ? (i === 0 ? 'Base' : 'Subtract') : `#${i + 1}`
+  const role = (i: number) => (op === 'subtract' ? (i === 0 ? 'Base' : 'Subtract') : `#${i + 1}`)
+  const preset = existing ? presetOf(existing) : op
+  const [max, setMaxState] = useState(() => (existing && blendMax.get(existing.id)) || 20)
+  const setMax = (v: number) => {
+    setMaxState(v)
+    if (existing) blendMax.set(existing.id, v)
+  }
 
   return (
     <Section
@@ -305,51 +305,57 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
       badge={existing ? 'Group' : `${operands.length} operands`}
       icon={existing ? <NodeIcon node={existing} className="size-6" /> : <BrandIcon name={OPERATIONS[op].icon} className="size-6" />}
     >
-      <div className="flex items-center gap-1">
-        <div className="grid min-w-0 flex-1 gap-1">
-          {operands.map((o, i) => (
-            <Operand key={`${i}:${o.id}`} node={o} label={labels.get(o.id)} role={role(i)} />
-          ))}
-        </div>
-        {canSwap && (
-          <Button variant="ghost" size="icon-xs" aria-label="Swap" onClick={() => setSwapped((s) => !s)}>
-            <ArrowUpDown />
-          </Button>
-        )}
-      </div>
-
       {!existing && (
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          spacing={0}
-          value={op}
-          onValueChange={(v) => {
-            if (v) setOp(v as OperationKind)
-          }}
-          className="w-full"
-        >
-          {(Object.keys(OPERATIONS) as OperationKind[]).map((kind) => (
-            <ToggleGroupItem key={kind} value={kind} className="flex-1 px-1" aria-label={OPERATIONS[kind].label}>
-              <BrandIcon name={OPERATIONS[kind].icon} /> {OPERATIONS[kind].label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+        <div className="flex items-center gap-1">
+          <div className="grid min-w-0 flex-1 gap-1">
+            {operands.map((o, i) => (
+              <Operand key={`${i}:${o.id}`} node={o} label={labels.get(o.id)} role={role(i)} />
+            ))}
+          </div>
+          {canSwap && (
+            <Button variant="ghost" size="icon-xs" aria-label="Swap" onClick={() => setSwapped((s) => !s)}>
+              <ArrowUpDown />
+            </Button>
+          )}
+        </div>
       )}
+
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        spacing={0}
+        value={preset ?? ''}
+        onValueChange={(v) => {
+          if (!v) return
+          if (!existing) return setOp(v as OperationKind)
+          if (v !== preset) send({ type: 'setOperation', id: existing.id, op: v as OperationKind, k })
+        }}
+        className="w-full"
+      >
+        {(Object.keys(OPERATIONS) as OperationKind[]).map((kind) => (
+          <ToggleGroupItem key={kind} value={kind} className="flex-1 px-1" aria-label={OPERATIONS[kind].label}>
+            <BrandIcon name={OPERATIONS[kind].icon} /> {OPERATIONS[kind].label}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
 
       <ParamSlider
         label="Blend radius"
         wrapInput={(input) => <BlendHint op="group" units={units}>{input}</BlendHint>}
         units={k === 0 ? 'sharp' : units}
         value={k}
-        max={20}
+        max={max}
+        onMaxChange={setMax}
         onChange={(v) => {
           setK(v)
           if (!existing) return
           setDragging(true)
           previewK(v)
         }}
-        onCommit={existing ? commitK : setK}
+        onCommit={(v) => {
+          if (v > max) setMax(v)
+          return existing ? commitK(v) : setK(v)
+        }}
       />
 
       {existing ? (
@@ -418,6 +424,11 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string> }) 
           onCommit={(v) => commit(p.key, v)}
         />
       ))}
+      {node.op === 'repeat' && (
+        <Button variant="outline" onClick={() => send({ type: 'blendRepeat', id: node.id })}>
+          <BrandIcon name="blend" /> Blend the copies
+        </Button>
+      )}
       <NodeActions id={node.id} />
     </Section>
   )
@@ -570,38 +581,19 @@ function OffsetSlider(props: { id: Id; k: number }) {
 
 /** Runs FTwist / FBend / FRepeat on the selection (they then ask for the line / box).
  *  A Repeat also gets Blend. A union, intersection, or difference also gets Offset. */
-function DeformButtons(props: { repeatId?: Id; offsetId?: Id }) {
-  return (
-    <Section title="Deform">
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-2">
-        {(Object.keys(DEFORMS) as DeformKind[]).map((kind) => (
-          <CommandTile key={kind} {...DEFORMS[kind]} />
-        ))}
-        {props.repeatId && (
-          <CommandTile label="Blend" icon="blend" onClick={() => send({ type: 'blendRepeat', id: props.repeatId! })} />
-        )}
-        {props.offsetId && (
-          <CommandTile label="Offset" icon="offset" onClick={() => send({ type: 'offsetNode', id: props.offsetId! })} />
-        )}
-      </div>
-    </Section>
-  )
+const blendMax = new Map<string, number>()
+
+function presetOf(group: SceneNode): OperationKind | undefined {
+  const modes = (group.children ?? []).map((_, i) => group.modes?.[i] ?? 'add')
+  if (modes[0] !== 'add') return undefined
+  const rest = modes.slice(1)
+  if (rest.every((m) => m === 'add')) return 'union'
+  if (rest.every((m) => m === 'subtract')) return 'subtract'
+  if (rest.every((m) => m === 'intersect')) return 'intersect'
+  return undefined
 }
 
 /** Icon + label button that runs a Rhino command (Create / Deform grids). */
-function CommandTile(props: { label: string; icon: BrandIconName; command?: AllowedCommand; onClick?: () => void }) {
-  return (
-    <button
-      type="button"
-      title={props.command ?? props.label}
-      onClick={props.onClick ?? (() => props.command && send({ type: 'runCommand', command: props.command }))}
-      className="group flex flex-col items-center gap-1 rounded-md border border-input bg-card px-1 pt-2 pb-1.5 transition-[background-color,translate,box-shadow] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:translate-y-px"
-    >
-      <BrandIcon name={props.icon} className="size-7 transition-transform group-hover:-translate-y-0.5" />
-      <span className="type-small">{props.label}</span>
-    </button>
-  )
-}
 
 function SubHeading(props: { children: React.ReactNode }) {
   return <h3 className="type-label -mb-1 text-muted-foreground">{props.children}</h3>

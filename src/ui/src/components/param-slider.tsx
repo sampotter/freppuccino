@@ -23,6 +23,7 @@ export function ParamSlider(props: {
   onChange?: (value: number) => void
   onCommit?: (value: number) => void
   wrapInput?: (input: React.ReactElement) => React.ReactElement
+  onMaxChange?: (max: number) => void
 }) {
   const { min = 0, step = 0.01 } = props
   const id = useId()
@@ -75,27 +76,59 @@ export function ParamSlider(props: {
           {props.units && <span className="type-numeric w-8 text-muted-foreground">{abbreviate(props.units)}</span>}
         </div>
       </div>
-      <Slider
-        min={Math.min(min, value)}
-        max={Math.max(props.max, value)}
-        step={step}
-        value={[value]}
-        disabled={props.disabled}
-        onValueChange={([v]) => {
-          show(v)
-          dragged.current = v
-          props.onChange?.(v)
-        }}
-        // Deferred: on keys Radix commits before onValueChange.
-        onValueCommit={([v]) => queueMicrotask(() => commit(v))}
-        // Radix skips onValueCommit when a drag ends where it started; close the gesture anyway.
-        onPointerUp={() =>
-          setTimeout(() => {
-            if (dragged.current !== null) commit(dragged.current)
-          })
-        }
-      />
+      <div className="flex items-center gap-2">
+        <Slider
+          className="flex-1"
+          min={Math.min(min, value)}
+          max={Math.max(props.max, value)}
+          step={step}
+          value={[value]}
+          disabled={props.disabled}
+          onValueChange={([v]) => {
+            show(v)
+            dragged.current = v
+            props.onChange?.(v)
+          }}
+          // Deferred: on keys Radix commits before onValueChange.
+          onValueCommit={([v]) => queueMicrotask(() => commit(v))}
+          // Radix skips onValueCommit when a drag ends where it started; close the gesture anyway.
+          onPointerUp={() =>
+            setTimeout(() => {
+              if (dragged.current !== null) commit(dragged.current)
+            })
+          }
+        />
+        {props.onMaxChange && <MaxField value={props.max} onCommit={props.onMaxChange} />}
+      </div>
     </div>
+  )
+}
+
+function MaxField(props: { value: number; onCommit: (v: number) => void }) {
+  const [text, setText] = useState(format(props.value))
+  const [shown, setShown] = useState(props.value)
+  if (props.value !== shown) {
+    setShown(props.value)
+    setText(format(props.value))
+  }
+  const commit = () => {
+    const v = Number(text)
+    if (!Number.isFinite(v) || v <= 0) return setText(format(props.value))
+    props.onCommit(v)
+  }
+  return (
+    <label className="flex shrink-0 items-center gap-1">
+      <span className="type-label text-muted-foreground">max</span>
+      <Input
+        inputMode="decimal"
+        aria-label="Slider maximum"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+        className="type-numeric h-6 w-12 px-1 text-right"
+      />
+    </label>
   )
 }
 
