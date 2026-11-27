@@ -168,7 +168,7 @@ public sealed class ShaderConduit : DisplayConduit
     static bool DrawScene(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, FrepSceneData scene, bool depth)
     {
         var program = scene.Program!;
-        var uniforms = FrepShaderGen.SceneUniforms(dp.Viewport, scene, Selection.FrepSelection.Roots(doc));
+        var uniforms = FrepShaderGen.SceneUniforms(dp.Viewport, scene, Selection.FrepSelection.DrawnRoots(doc));
         if (DrawProgram(gpu, dp, program, uniforms, depth))
         {
             lastGood[doc.RuntimeSerialNumber] = program;

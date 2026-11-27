@@ -52,7 +52,7 @@ public static class ControlOutlines
         var mode = FrepDisplaySettings.Cutters;
         var cutterObjects = cutters == null && mode == CutterDisplay.Silhouette ? [] : Cutters(tree, roots);
         var rootSet = roots.ToHashSet();
-        var selectedLeaves = FrepSelection.Leaves(doc);
+        var selectedLeaves = FrepSelection.DrawnLeaves(doc);
 
         // Per object, every instance (per root; already deduplicated within a root); the first is the primary instance.
         var byObject = new Dictionary<Guid, List<FrepInstance>>();

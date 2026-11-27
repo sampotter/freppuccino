@@ -65,6 +65,14 @@ public static class FrepSelection
 
     static int explicitDepth;
 
+    /// Overlap-menu hover: drawn as selected, without being selected.
+    public static FrepOperand? PreviewRoot { get; set; }
+    public static FrepInstance? PreviewLeaf { get; set; }
+
+    public static List<FrepOperand> DrawnRoots(RhinoDoc doc) => PreviewRoot is { } r ? [.. Roots(doc), r] : Roots(doc);
+
+    public static List<FrepInstance> DrawnLeaves(RhinoDoc doc) => PreviewLeaf is { } l ? [.. Leaves(doc), l] : Leaves(doc);
+
     /// Selection made by Freppuccino itself (the tree, a pick): hidden cutters may be selected there, and only there.
     public static IDisposable Explicit()
     {
@@ -221,6 +229,15 @@ public static class FrepSelection
             doc.Objects.Select(leaf.Object, true, true);
         }
         RefreshGumball();
+        doc.Views.Redraw();
+    }
+
+    /// The entity that holds this leaf's selection: its instance carrier for a secondary instance, else its brep.
+    public static void DeselectLeaf(RhinoDoc doc, FrepInstance leaf)
+    {
+        var carrier = doc.Objects.GetSelectedObjects(false, false).FirstOrDefault(o => FrepCarriers.InstanceOf(doc, o) is { } i && i.SamePath(leaf));
+        doc.Objects.Select(carrier?.Id ?? leaf.Object, false);
+        if (picked.TryGetValue(doc.RuntimeSerialNumber, out var map)) map.Remove(leaf.Object);
         doc.Views.Redraw();
     }
 

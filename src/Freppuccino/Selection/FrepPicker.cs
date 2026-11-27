@@ -23,7 +23,7 @@ namespace Freppuccino.Selection;
 ///                by several roots, where no root's surface is hit first): no pick, a message.
 /// The hit is decided on mouse-down (which is when Rhino's own pick has to be cancelled), the selection is made on
 /// mouse-up, after Rhino has finished with the click.
-public sealed class FrepPicker : MouseCallback
+public sealed partial class FrepPicker : MouseCallback
 {
     static FrepPicker? instance;
     static int sessions;
@@ -54,21 +54,31 @@ public sealed class FrepPicker : MouseCallback
     protected override void OnMouseDown(MouseCallbackEventArgs e)
     {
         pending = null;
+        band = null;
         if (e.MouseButton != MouseButton.Left || e.View is not { } view) return;
         var doc = view.Document;
         if (doc == null || !IsFrepView(view.ActiveViewport)) return;
         if (e.IsOverGumball() != Rhino.UI.Gumball.GumballMode.None) return;
         if (Command.InCommand() && sessions == 0) return;
-        if (e.CtrlKeyDown) return;
 
         var vp = view.ActiveViewport;
         var client = new Point2d(e.ViewportPoint.X, e.ViewportPoint.Y);
-        bool rhino = RhinoUnder(view, e.ViewportPoint);
-        if (e.ShiftKeyDown && sessions == 0)
+        if (sessions > 0)
         {
-            // Leaf: the nearest control instance. A miss is left to Rhino (Shift+click = add to its selection).
-            var leaf = PickOutline(doc, vp, client, rootsToo: false, out var ambiguous, out var shared)?.Instance;
-            string? note = null;
+            SessionDown(e, view, client);
+            return;
+        }
+        if (e.CtrlKeyDown && e.ShiftKeyDown) return;
+        var mode = e.CtrlKeyDown ? PickMode.Remove : e.ShiftKeyDown ? PickMode.Leaf : PickMode.Root;
+        var hits = RhinoHits(view, e.ViewportPoint);
+        if (mode == PickMode.Remove) hits.AddRange(SelectedHits(view, e.ViewportPoint));
+
+        FrepInstance? leaf = null;
+        string? note = null;
+        if (mode == PickMode.Leaf)
+        {
+            // Leaf: the nearest control instance.
+            leaf = PickOutline(doc, vp, client, rootsToo: false, out var ambiguous, out var shared)?.Instance;
             if (shared.Count > 1)
             {
                 int i = cycle is { } c && c.At.DistanceTo(client) <= OutlinePixels && c.Set.Count == shared.Count &&
@@ -80,95 +90,126 @@ public sealed class FrepPicker : MouseCallback
                 ambiguous = false;
                 note = $"Freppuccino: selected {Label(doc, leaf)}, {i + 1} of {shared.Count} shapes sharing that outline. Shift+click again for the next.";
             }
-            if (leaf == null && !ambiguous && PickRoot(doc, vp, client) == null && HiddenCutterOver(view, e.ViewportPoint, out var hiddenReal))
+            if (leaf == null && !ambiguous) leaf = PickInstance(doc, vp, client, out ambiguous);
+            if (ambiguous)
             {
                 e.Cancel = true;
-                pending = new Pending(doc, null, null, false, Native: hiddenReal, Add: true);
+                pending = new Pending(doc, [], mode, Ambiguous: true);
                 return;
             }
-            if (leaf == null && !ambiguous)
-            {
-                if (rhino && PickRoot(doc, vp, client) == null) return;
-                leaf = PickInstance(doc, vp, client, out ambiguous);
-            }
-            if (leaf == null && !ambiguous) return;
-            e.Cancel = true;
-            pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false, note);
-            return;
         }
 
-        var hit = PickOutline(doc, vp, client, rootsToo: true, out _, out _)?.Root ?? PickRoot(doc, vp, client);
-        if (hit == null && !rhino)
+        var candidates = Candidates(view, e.ViewportPoint, mode, leaf, hits);
+        if (candidates.All(c => c.IsRhino))
         {
+            // No F-rep involved: Rhino's own click, except where it could grab a hidden cutter instead.
+            if (HiddenCutterUnder(doc, hits))
+            {
+                if (candidates.Count == 0)
+                {
+                    e.Cancel = true;
+                    band = new Band { View = view, Start = e.ViewportPoint, End = e.ViewportPoint, Mode = mode, Enabled = true };
+                }
+                else if (candidates.Count == 1 && mode != PickMode.Remove)
+                {
+                    e.Cancel = true;
+                    pending = new Pending(doc, candidates, mode);
+                }
+                return;
+            }
+            if (candidates.Count > 0 || mode != PickMode.Root) return;
             // An exposed control (e.g. a cutter's face outside the result) selects the root it belongs to.
+            var inst = PickInstance(doc, vp, client, out var ambiguousInstance);
+            if (inst != null || ambiguousInstance)
+            {
+                e.Cancel = true;
+                pending = ambiguousInstance ? new Pending(doc, [], mode, Ambiguous: true) : new Pending(doc, [RootCandidate(doc, inst!.Root, 0)], mode);
+                return;
+            }
+            // Rhino deselects its own objects on an empty click, but node roots aren't Rhino objects.
+            UiController_ClearNodes(doc);
+            return;
+        }
+        e.Cancel = true;
+        pending = new Pending(doc, candidates.Count == 1 ? [candidates[0]] : candidates, mode, note, At: view.ClientToScreen(e.ViewportPoint));
+    }
+
+    /// In a selection session (a command asking for blends) clicks pick roots and accumulate.
+    void SessionDown(MouseCallbackEventArgs e, RhinoView view, Point2d client)
+    {
+        var doc = view.Document;
+        var vp = view.ActiveViewport;
+        var hit = PickOutline(doc, vp, client, rootsToo: true, out _, out _)?.Root ?? PickRoot(doc, vp, client);
+        if (hit == null && !RhinoUnder(view, e.ViewportPoint))
+        {
             var inst = PickInstance(doc, vp, client, out var ambiguous);
             if (inst != null) hit = inst.Root;
             else if (ambiguous)
             {
                 e.Cancel = true;
-                pending = new Pending(doc, null, null, true);
+                pending = new Pending(doc, [], PickMode.Root, Ambiguous: true);
                 return;
             }
         }
-        if (hit is not { } root)
-        {
-            if (sessions == 0 && HiddenCutterOver(view, e.ViewportPoint, out var real))
-            {
-                e.Cancel = true;
-                pending = new Pending(doc, null, null, false, Native: real);
-                return;
-            }
-            // Rhino deselects its own objects on an empty click, but node roots aren't Rhino objects. (Not in a session:
-            // there an empty click goes to the running command.)
-            if (sessions == 0) UiController_ClearNodes(doc);
-            return;
-        }
+        if (hit is not { } root) return;
         e.Cancel = true;
-        pending = new Pending(doc, root, null, false);
+        pending = new Pending(doc, [], PickMode.Root, Session: root);
     }
 
-    sealed record Pending(RhinoDoc Doc, FrepOperand? Root, FrepInstance? Leaf, bool Ambiguous, string? Note = null, Guid? Native = null, bool Add = false);
+    sealed record Pending(RhinoDoc Doc, List<Candidate> Choices, PickMode Mode, string? Note = null, bool Ambiguous = false, FrepOperand? Session = null, System.Drawing.Point At = default);
     Pending? pending;
+    Band? band;
     static (Point2d At, List<FrepInstance> Set, int Index)? cycle;
 
     static string Label(RhinoDoc doc, FrepInstance leaf) =>
         doc.Objects.FindId(leaf.Object) is { } o ? !string.IsNullOrWhiteSpace(o.Name) ? o.Name : Sdf.SdfUserText.ReadType(o.Attributes)?.ToString() ?? "a shape" : "a shape";
 
+    protected override void OnMouseMove(MouseCallbackEventArgs e)
+    {
+        if (band is not { } b) return;
+        b.End = e.ViewportPoint;
+        b.View.Redraw();
+    }
+
     protected override void OnMouseUp(MouseCallbackEventArgs e)
     {
-        if (pending is not { } p || e.MouseButton != MouseButton.Left) return;
-        pending = null;
-        e.Cancel = true;
-        if (p.Native is { } id)
+        if (e.MouseButton != MouseButton.Left) return;
+        if (band is { } b)
         {
-            // A click on an object behind a hidden cutter: as Rhino's own click with that cutter left out.
-            if (!p.Add)
-            {
-                p.Doc.Objects.UnselectAll();
-                UiController_ClearNodes(p.Doc);
-            }
-            p.Doc.Objects.Select(id, true, true);
-            FrepSelection.RefreshGumball();
-            p.Doc.Views.Redraw();
+            band = null;
+            e.Cancel = true;
+            b.End = e.ViewportPoint;
+            b.Finish();
+            Picked?.Invoke(b.View.Document);
             return;
         }
+        if (pending is not { } p) return;
+        pending = null;
+        e.Cancel = true;
         if (p.Ambiguous)
         {
             RhinoApp.WriteLine("Freppuccino: several shapes share that outline. Select the one you want in the Freppuccino panel's tree.");
             return;
         }
-        if (p.Leaf != null)
-        {
-            FrepSelection.SelectLeaf(p.Doc, p.Leaf, add: false);
-            if (p.Note != null) RhinoApp.WriteLine(p.Note);
-        }
-        else if (p.Root is { } r)
+        if (p.Session is { } r)
         {
             // In a selection session clicks accumulate (a second click on a chosen blend unchooses it).
-            if (sessions > 0 && FrepSelection.Roots(p.Doc).Contains(r)) FrepSelection.DeselectRoot(p.Doc, r);
-            else FrepSelection.SelectRoot(p.Doc, r, add: sessions > 0);
+            if (FrepSelection.Roots(p.Doc).Contains(r)) FrepSelection.DeselectRoot(p.Doc, r);
+            else FrepSelection.SelectRoot(p.Doc, r, add: true);
+            Picked?.Invoke(p.Doc);
+            return;
         }
-        Picked?.Invoke(p.Doc);
+        if (p.Choices.Count == 1)
+        {
+            Apply(p.Doc, p.Choices[0], p.Mode, p.Note);
+            Picked?.Invoke(p.Doc);
+            return;
+        }
+        Ui.PickMenuForm.Show(p.Doc, p.At, p.Choices, c =>
+        {
+            Apply(p.Doc, c, p.Mode, c.Leaf != null ? p.Note : null);
+            Picked?.Invoke(p.Doc);
+        });
     }
 
     // Per scene snapshot: one single-primitive field per control instance (its canonical leaf under T × P).
@@ -315,28 +356,6 @@ public sealed class FrepPicker : MouseCallback
         pick.UpdateClippingPlanes();
         return view.Document.Objects.PickObjects(pick).Any(r => r.Object() is { } o && o is not FrepCarrier &&
             !ControlOutlines.IsControl(o) && !Commands.FrepMeshCommand.IsBaked(o));
-    }
-
-    /// A hidden cutter's brep under the cursor together with exactly one ordinary Rhino object, <paramref name="real"/>,
-    /// which Rhino's own pick could pass over for the cutter: the click selects that object instead.
-    static bool HiddenCutterOver(RhinoView view, System.Drawing.Point at, out Guid real)
-    {
-        real = Guid.Empty;
-        if (FrepDisplaySettings.Cutters != CutterDisplay.Hidden) return false;
-        using var pick = new Rhino.Input.Custom.PickContext { View = view, PickStyle = Rhino.Input.Custom.PickStyle.PointPick };
-        pick.SetPickTransform(view.ActiveViewport.GetPickTransform(at));
-        pick.UpdateClippingPlanes();
-        var cutters = ControlOutlines.CutterObjects(view.Document);
-        var hits = view.Document.Objects.PickObjects(pick);
-        if (!hits.Any(r => r.Object() is { } o && cutters.Contains(o.Id))) return false;
-        var vp = view.ActiveViewport;
-        var ordinary = hits.Where(r => r.Object() is { } o && o is not FrepCarrier && !ControlOutlines.IsControl(o) && !Commands.FrepMeshCommand.IsBaked(o))
-            .Select(r => r.ObjectId).Distinct().ToList();
-        // Several ordinary objects: Rhino's own pick and its selection menu decide; the hidden cutter is dropped after.
-        // Only cutters there: Rhino's own click or drag runs, and the selection rule drops the cutter.
-        if (ordinary.Count != 1) return false;
-        real = ordinary[0];
-        return true;
     }
 
     static void UiController_ClearNodes(RhinoDoc doc) => Ui.UiController.SetSelectedNodes(doc, []);
