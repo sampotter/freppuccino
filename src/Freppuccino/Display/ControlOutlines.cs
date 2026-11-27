@@ -21,6 +21,7 @@ public static class ControlOutlines
     const SilhouetteType Kinds = SilhouetteType.Projecting | SilhouetteType.TangentProjects | SilhouetteType.Crease | SilhouetteType.Boundary;
     static readonly System.Drawing.Color Unselected = System.Drawing.Color.FromArgb(70, 70, 70);
     public static int HiddenAlpha { get; set; } = 64;
+    public static bool HiddenCuttersOnly { get; set; } = true;
 
     readonly record struct Key(Guid Obj, uint Serial, string Rel, bool Persp, Point3d Eye, Vector3d Dir);
     static readonly Dictionary<Key, Curve[]> cache = [];
@@ -46,7 +47,10 @@ public static class ControlOutlines
         // Base instance transforms from the committed tree: FrepScene.Get's tree already carries a dragged root's preview
         // matrix, and the real brep still sits at its committed primary placement. Each preview is applied once below.
         var scene = Scene.FrepScene.Get(doc);
-        var (roots, instances) = FrepInstances.Compute(Csg.FrepTrees.Get(doc), scene.Ids);
+        var tree = Csg.FrepTrees.Get(doc);
+        var (roots, instances) = FrepInstances.Compute(tree, scene.Ids);
+        var byId = tree.Nodes.ToDictionary(n => n.Id);
+        bool cuttersOnly = hidden && HiddenCuttersOnly;
         var rootSet = roots.ToHashSet();
         var selectedLeaves = FrepSelection.Leaves(doc);
 
@@ -82,7 +86,7 @@ public static class ControlOutlines
             if (!byObject.TryGetValue(o.Id, out var list) || list.Count == 0)
             {
                 // Not reached by any visible root (e.g. under a hidden node): its brep as is (following its own drag).
-                if (objSelected == selected) Draw(dp, o, leafDrag.TryGetValue(o.Id, out var own) ? own : null, vp, doc, color, thickness);
+                if (objSelected == selected && !cuttersOnly) Draw(dp, o, leafDrag.TryGetValue(o.Id, out var own) ? own : null, vp, doc, color, thickness);
                 continue;
             }
             var primary = list[0];
@@ -93,7 +97,7 @@ public static class ControlOutlines
                 // (picked through its path, or through its own instance carrier).
                 bool isSel = (objSelected && rootSet.Contains(FrepOperand.Object(o.Id))) ||
                     selectedLeaves.Any(l => l.SamePath(inst)); // by path: its T may carry a drag preview
-                if (isSel != selected) continue;
+                if (isSel != selected || (cuttersOnly && !Subtracted(byId, inst))) continue;
                 // The real brep B sits at the primary instance (B = T_p c); this instance shows T_inst c, previewed:
                 Transform eff;
                 if (inst.Root.IsNode && rootDrag.TryGetValue(inst.Root.NodeId, out var rx)) eff = rx * inst.T * primaryInv;
@@ -105,6 +109,16 @@ public static class ControlOutlines
                 Draw(dp, o, Placement.IsIdentity(eff, 1e-12) ? null : eff, vp, doc, color, thickness);
             }
         }
+    }
+
+    static bool Subtracted(Dictionary<int, Csg.FrepNode> byId, FrepInstance inst)
+    {
+        for (int i = 0; i < inst.Path.Length; i++)
+        {
+            var child = i + 1 < inst.Path.Length ? FrepOperand.Node(inst.Path[i + 1]) : FrepOperand.Object(inst.Object);
+            if (byId.TryGetValue(inst.Path[i], out var n) && n.Op == Csg.FrepOp.Difference && n.Operands.Skip(1).Contains(child)) return true;
+        }
+        return false;
     }
 
     public static List<(FrepInstance Instance, Curve[] Curves)> Pickable(RhinoDoc doc, RhinoViewport vp)
