@@ -14,7 +14,7 @@ export function createMockHost(): Transport {
   const id = () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`
   let nextNode = 1
   const opNode = (op: SceneNode['op'], k: number, children: SceneNode[]): SceneNode => ({
-    id: `N${nextNode++}`, kind: 'operation', name: `N${nextNode - 1}`, op, k, visible: true, locked: false, children,
+    id: `N${nextNode++}`, kind: 'operation', name: `${op === 'group' ? 'Group' : op ? op[0].toUpperCase() + op.slice(1) : 'N'} ${nextNode - 1}`, op, k, visible: true, locked: false, children,
   })
   const group = (preset: OperationKind, k: number, children: SceneNode[]): SceneNode => ({
     ...opNode('group', k, children),
