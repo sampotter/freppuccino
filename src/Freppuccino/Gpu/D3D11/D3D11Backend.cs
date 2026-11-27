@@ -427,7 +427,8 @@ public sealed class D3D11Backend : IGpuBackend
         var ctx = pipeline.GetDirect3d11DeviceContext();
         if (dev == IntPtr.Zero || dev != device || !initOk || ctxState == IntPtr.Zero || !EnsurePost() || !EnsureOutline()) return Reject("setup");
         if (outlineUniforms == null || gPos.Srv == IntPtr.Zero || TraceSource.Serial != serial || TraceSource.Viewport != (pipeline.Viewport?.Id ?? Guid.Empty)) return Reject("stale-gbuffer");
-        var now = pipeline.Viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+        if (pipeline.Viewport is not { } viewport) return Reject("stale-gbuffer");
+        var now = viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
         for (int i = 0; i < 16; i++)
         {
             double a = now[i / 4, i % 4], b = gbufClip[i];

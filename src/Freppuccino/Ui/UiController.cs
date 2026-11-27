@@ -331,6 +331,47 @@ public sealed class UiController : IDisposable
         return roots;
     }
 
+    static readonly Dictionary<string, string> PrimitiveLabels = new()
+    {
+        ["sdBox"] = "Box", ["sdSphere"] = "Sphere", ["sdCappedCylinder"] = "Cylinder", ["sdCappedCone"] = "Cone",
+        ["sdPyramid"] = "Pyramid", ["sdEllipsoid"] = "Ellipsoid", ["sdTorus"] = "Torus", ["sdUser"] = "Function",
+    };
+
+    static readonly Dictionary<string, string> OperationLabels = new()
+    {
+        [OperationKind.Union] = "Union", [OperationKind.Subtract] = "Subtract", [OperationKind.Intersect] = "Intersect",
+        [OperationKind.Twist] = "Twist", [OperationKind.Bend] = "Bend", [OperationKind.Repeat] = "Repeat",
+        [OperationKind.Blend] = "Blend", [OperationKind.Offset] = "Offset",
+    };
+
+    static string TypeLabel(SceneNode n) => n.Kind == SceneNodeKind.Operation
+        ? n.Op is { } op && OperationLabels.TryGetValue(op, out var o) ? o : "Operation"
+        : n.SdfType is { } t ? PrimitiveLabels.TryGetValue(t, out var p) ? p : t : "Primitive";
+
+    /// What the panel's tree shows for each node, as (label, type): the Rhino name if set, else "Sphere 1", "Union 2", ...
+    /// in tree order (the same numbering as the panel's labelNodes). Keyed by node name ("N3") or object id.
+    public static Dictionary<string, (string Label, string Type)> TreeLabels(RhinoDoc doc)
+    {
+        var labels = new Dictionary<string, (string, string)>();
+        var counters = new Dictionary<string, int>();
+        void Walk(IEnumerable<SceneNode> nodes)
+        {
+            foreach (var n in nodes)
+            {
+                string type = TypeLabel(n);
+                string stem = n.Kind == SceneNodeKind.Primitive && n.Custom == true ? $"Custom {type}-based FRep" : type;
+                int i = counters.GetValueOrDefault(stem) + 1;
+                counters[stem] = i;
+                labels[n.Id] = (n.Custom == true ? $"{stem} {i}" : n.Name ?? $"{stem} {i}", type);
+                if (n.Children != null) Walk(n.Children);
+            }
+        }
+        Walk(BuildScene(doc));
+        return labels;
+    }
+
+    public static string TreeKey(FrepOperand o) => o.IsNode ? NodeKey(o.NodeId) : ObjectKey(o.ObjectId);
+
     static SceneNode Missing(string id) =>
         new(id, SceneNodeKind.Primitive, "(deleted)", Visible: false, Locked: false, Missing: true);
 

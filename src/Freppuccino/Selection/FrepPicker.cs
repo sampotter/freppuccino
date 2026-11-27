@@ -54,7 +54,7 @@ public sealed partial class FrepPicker : MouseCallback
     protected override void OnMouseDown(MouseCallbackEventArgs e)
     {
         pending = null;
-        band = null;
+        CancelBand();
         if (e.MouseButton != MouseButton.Left || e.View is not { } view) return;
         var doc = view.Document;
         if (doc == null || !IsFrepView(view.ActiveViewport)) return;
@@ -73,65 +73,41 @@ public sealed partial class FrepPicker : MouseCallback
         var hits = RhinoHits(view, e.ViewportPoint);
         if (mode == PickMode.Remove) hits.AddRange(SelectedHits(view, e.ViewportPoint));
 
-        FrepInstance? leaf = null;
-        string? note = null;
+        // Leaf: the nearest control outline; shapes sharing it, or tied control volumes, all compete in the menu.
+        var leaves = new List<FrepInstance>();
         if (mode == PickMode.Leaf)
         {
-            // Leaf: the nearest control instance.
-            leaf = PickOutline(doc, vp, client, rootsToo: false, out var ambiguous, out var shared)?.Instance;
-            if (shared.Count > 1)
-            {
-                int i = cycle is { } c && c.At.DistanceTo(client) <= OutlinePixels && c.Set.Count == shared.Count &&
-                        c.Set.Zip(shared).All(x => x.First.SamePath(x.Second)) &&
-                        FrepSelection.Leaves(doc).Any(l => l.SamePath(c.Set[c.Index]))
-                    ? (c.Index + 1) % shared.Count : 0;
-                cycle = (i == 0 ? client : cycle!.Value.At, shared, i);
-                leaf = shared[i];
-                ambiguous = false;
-                note = $"Freppuccino: selected {Label(doc, leaf)}, {i + 1} of {shared.Count} shapes sharing that outline. Shift+click again for the next.";
-            }
-            if (leaf == null && !ambiguous) leaf = PickInstance(doc, vp, client, out ambiguous);
-            if (ambiguous)
-            {
-                e.Cancel = true;
-                pending = new Pending(doc, [], mode, Ambiguous: true);
-                return;
-            }
+            var outline = PickOutline(doc, vp, client, rootsToo: false, out _, out var shared)?.Instance;
+            if (shared.Count > 1) leaves.AddRange(shared);
+            else if (outline != null) leaves.Add(outline);
+            else leaves.AddRange(PickInstanceTies(doc, vp, client));
         }
 
-        var candidates = Candidates(view, e.ViewportPoint, mode, leaf, hits);
-        if (candidates.All(c => c.IsRhino))
+        var candidates = Candidates(view, e.ViewportPoint, mode, leaves, hits);
+        if (candidates.Count == 0 && mode == PickMode.Root)
         {
-            // No F-rep involved: Rhino's own click, except where it could grab a hidden cutter instead.
-            if (HiddenCutterUnder(doc, hits))
-            {
-                if (candidates.Count == 0)
-                {
-                    e.Cancel = true;
-                    band = new Band { View = view, Start = e.ViewportPoint, End = e.ViewportPoint, Mode = mode, Enabled = true };
-                }
-                else if (candidates.Count == 1 && mode != PickMode.Remove)
-                {
-                    e.Cancel = true;
-                    pending = new Pending(doc, candidates, mode);
-                }
-                return;
-            }
-            if (candidates.Count > 0 || mode != PickMode.Root) return;
             // An exposed control (e.g. a cutter's face outside the result) selects the root it belongs to.
-            var inst = PickInstance(doc, vp, client, out var ambiguousInstance);
-            if (inst != null || ambiguousInstance)
-            {
-                e.Cancel = true;
-                pending = ambiguousInstance ? new Pending(doc, [], mode, Ambiguous: true) : new Pending(doc, [RootCandidate(doc, inst!.Root, 0)], mode);
-                return;
-            }
+            var depth = 0.0;
+            candidates = [.. PickInstanceTies(doc, vp, client).Select(i => i.Root).Distinct().Select(r => RootCandidate(doc, r, depth++))];
+        }
+        // Rhino's own pick here would also reach control shapes (cutters, added shapes, carriers, baked meshes), which
+        // are not picked directly in a Freppuccino view. With those under the cursor, or any F-rep candidate, the click
+        // is decided here; otherwise it is Rhino's.
+        if (candidates.All(c => c.IsRhino) && hits.All(h => Ordinary(h.Object)))
+        {
             // Rhino deselects its own objects on an empty click, but node roots aren't Rhino objects.
-            UiController_ClearNodes(doc);
+            if (candidates.Count == 0 && mode == PickMode.Root) UiController_ClearNodes(doc);
             return;
         }
         e.Cancel = true;
-        pending = new Pending(doc, candidates.Count == 1 ? [candidates[0]] : candidates, mode, note, At: view.ClientToScreen(e.ViewportPoint));
+        if (candidates.Count == 0)
+        {
+            // Only control shapes under the cursor: nothing to pick, but a drag here is a window or crossing.
+            band = new Band { View = view, Start = e.ViewportPoint, End = e.ViewportPoint, Mode = mode, Enabled = true };
+            BandHooks(true);
+            return;
+        }
+        pending = new Pending(doc, candidates.Count == 1 ? [candidates[0]] : candidates, mode, At: view.ClientToScreen(e.ViewportPoint));
     }
 
     /// In a selection session (a command asking for blends) clicks pick roots and accumulate.
@@ -156,13 +132,48 @@ public sealed partial class FrepPicker : MouseCallback
         pending = new Pending(doc, [], PickMode.Root, Session: root);
     }
 
-    sealed record Pending(RhinoDoc Doc, List<Candidate> Choices, PickMode Mode, string? Note = null, bool Ambiguous = false, FrepOperand? Session = null, System.Drawing.Point At = default);
+    sealed record Pending(RhinoDoc Doc, List<Candidate> Choices, PickMode Mode, bool Ambiguous = false, FrepOperand? Session = null, System.Drawing.Point At = default);
     Pending? pending;
     Band? band;
-    static (Point2d At, List<FrepInstance> Set, int Index)? cycle;
 
-    static string Label(RhinoDoc doc, FrepInstance leaf) =>
-        doc.Objects.FindId(leaf.Object) is { } o ? !string.IsNullOrWhiteSpace(o.Name) ? o.Name : Sdf.SdfUserText.ReadType(o.Attributes)?.ToString() ?? "a shape" : "a shape";
+    /// Esc, another button or a new press abandons a drag: the rectangle goes, the selection stays as it was.
+    void CancelBand()
+    {
+        if (band is not { } b) return;
+        band = null;
+        BandHooks(false);
+        b.Enabled = false;
+        b.View.Redraw();
+    }
+
+    /// While a drag is in progress only: Esc (Rhino's own keyboard event), Rhino losing focus, or the view or document
+    /// going away end it, so a lost mouse-up can't finish it later.
+    void BandHooks(bool on)
+    {
+        if (on)
+        {
+            RhinoApp.KeyboardEvent += EscapeCancelsBand;
+            RhinoView.Destroy += BandViewGone;
+            RhinoDoc.CloseDocument += BandDocGone;
+            if (RhinoEtoApp.MainWindow is { } w) w.LostFocus += BandFocusLost;
+            return;
+        }
+        RhinoApp.KeyboardEvent -= EscapeCancelsBand;
+        RhinoView.Destroy -= BandViewGone;
+        RhinoDoc.CloseDocument -= BandDocGone;
+        if (RhinoEtoApp.MainWindow is { } m) m.LostFocus -= BandFocusLost;
+    }
+
+    void EscapeCancelsBand(int key)
+    {
+        if (key == 27) CancelBand();
+    }
+
+    void BandViewGone(object? sender, ViewEventArgs e) => CancelBand();
+
+    void BandDocGone(object? sender, DocumentEventArgs e) => CancelBand();
+
+    void BandFocusLost(object? sender, EventArgs e) => CancelBand();
 
     protected override void OnMouseMove(MouseCallbackEventArgs e)
     {
@@ -178,8 +189,15 @@ public sealed partial class FrepPicker : MouseCallback
         {
             band = null;
             e.Cancel = true;
-            b.End = e.ViewportPoint;
-            b.Finish();
+            try
+            {
+                b.End = e.ViewportPoint;
+                b.Finish();
+            }
+            finally
+            {
+                BandHooks(false);
+            }
             Picked?.Invoke(b.View.Document);
             return;
         }
@@ -201,13 +219,13 @@ public sealed partial class FrepPicker : MouseCallback
         }
         if (p.Choices.Count == 1)
         {
-            Apply(p.Doc, p.Choices[0], p.Mode, p.Note);
+            Apply(p.Doc, p.Choices[0], p.Mode);
             Picked?.Invoke(p.Doc);
             return;
         }
         Ui.PickMenuForm.Show(p.Doc, p.At, p.Choices, c =>
         {
-            Apply(p.Doc, c, p.Mode, c.Leaf != null ? p.Note : null);
+            Apply(p.Doc, c, p.Mode);
             Picked?.Invoke(p.Doc);
         });
     }
@@ -239,7 +257,14 @@ public sealed partial class FrepPicker : MouseCallback
     /// that aren't the same shape at the same place (coincident shapes from different roots): no pick then.
     public static FrepInstance? PickInstance(RhinoDoc doc, RhinoViewport vp, Point2d client, out bool ambiguous)
     {
-        ambiguous = false;
+        var ties = PickInstanceTies(doc, vp, client);
+        ambiguous = ties.Count > 1;
+        return ties.Count == 1 ? ties[0] : null;
+    }
+
+    /// The nearest control volumes under the cursor, one per distinct (root, object, placement) tied at that depth.
+    public static List<FrepInstance> PickInstanceTies(RhinoDoc doc, RhinoViewport vp, Point2d client)
+    {
         var scene = FrepScene.Get(doc);
         var ray = Ray(vp, client);
         var hits = new List<(FrepInstance Inst, double T)>();
@@ -249,20 +274,17 @@ public sealed partial class FrepPicker : MouseCallback
             if (doc.Objects.FindId(inst.Object) is not { IsLocked: false, IsHidden: false } || hidden.Contains(inst.Object)) continue;
             if (March(field, box, ray) is { } t) hits.Add((inst, t));
         }
-        if (hits.Count == 0) return null;
+        if (hits.Count == 0) return [];
         hits.Sort((a, b) => a.T.CompareTo(b.T));
         var best = hits[0];
         double tieTol = 4 * (ray.EpsConst + ray.EpsSlope * best.T);
-        var tied = hits.Where(h => h.T - best.T <= tieTol).ToList();
         // A click resolves the actual root (and instance): equal-depth hits from different roots, objects or transforms
-        // are ambiguous, even for one shared shape at one place (agreed rule, #118). Within a root, instances are
-        // already deduplicated by (object, T).
-        if (tied.Any(h => h.Inst.Root != best.Inst.Root || h.Inst.Object != best.Inst.Object || !FrepInstances.Same(h.Inst.T, best.Inst.T)))
-        {
-            ambiguous = true;
-            return null;
-        }
-        return best.Inst;
+        // are distinct candidates, even for one shared shape at one place (agreed rule, #118). Within a root, instances
+        // are already deduplicated by (object, T).
+        var ties = new List<FrepInstance>();
+        foreach (var h in hits.Where(h => h.T - best.T <= tieTol))
+            if (!ties.Any(i => i.Root == h.Inst.Root && i.Object == h.Inst.Object && FrepInstances.Same(i.T, h.Inst.T))) ties.Add(h.Inst);
+        return ties;
     }
 
 

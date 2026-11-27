@@ -67,13 +67,6 @@ public sealed partial class FrepPicker
         return result;
     }
 
-    static bool HiddenCutterUnder(RhinoDoc doc, List<(RhinoObject Object, double Depth)> hits)
-    {
-        if (FrepDisplaySettings.Cutters != CutterDisplay.Hidden) return false;
-        var cutters = ControlOutlines.CutterObjects(doc);
-        return hits.Any(h => cutters.Contains(h.Object.Id));
-    }
-
     /// Nearest root surface along the ray and its depth.
     static (FrepOperand Root, double Depth)? RootHit(RhinoDoc doc, RhinoViewport vp, PickRay ray)
     {
@@ -86,26 +79,35 @@ public sealed partial class FrepPicker
         return best is { } b ? (b.Root, Depth(vp, At(ray, b.T))) : null;
     }
 
-    /// Depth of the curve under the cursor: on the segment drawn nearest it, the point closest to the click ray.
+    /// Depth of the curve under the cursor: on the segment drawn nearest it, at the point drawn nearest the cursor
+    /// (screen-space parameter, mapped back to the segment with the perspective divide).
     static double CurveDepth(Curve[] curves, RhinoViewport vp, Point2d client)
     {
-        var view = vp.ClientToWorld(client);
         double best = double.PositiveInfinity, depth = double.PositiveInfinity;
+        var cam = vp.CameraLocation;
+        var dir = vp.CameraDirection;
+        dir.Unitize();
         foreach (var c in curves)
         {
             var pts = polylines.GetValue(c, k => k.TryGetPolyline(out var pl) ? [.. pl]
                 : k.ToPolyline(0, 0, Math.PI / 90, 0, 0, 0, 0, 0, true)?.ToPolyline() is { } q ? [.. q] : []);
             for (int i = 0; i + 1 < pts.Length; i++)
             {
-                var seg = new Line(pts[i], pts[i + 1]);
-                if (!Rhino.Geometry.Intersect.Intersection.LineLine(view, seg, out _, out var u)) u = 0;
-                var p = seg.PointAt(Math.Clamp(u, 0, 1));
-                double d = vp.WorldToClient(p).DistanceTo(client);
-                if (d < best)
+                Point2d a = vp.WorldToClient(pts[i]), b = vp.WorldToClient(pts[i + 1]);
+                var ab = b - a;
+                double len2 = ab.X * ab.X + ab.Y * ab.Y;
+                double u = len2 > 0 ? Math.Clamp(((client.X - a.X) * ab.X + (client.Y - a.Y) * ab.Y) / len2, 0, 1) : 0;
+                double d = client.DistanceTo(a + ab * u);
+                if (d >= best) continue;
+                best = d;
+                double s = u;
+                if (vp.IsPerspectiveProjection)
                 {
-                    best = d;
-                    depth = Depth(vp, p);
+                    double za = (pts[i] - cam) * dir, zb = (pts[i + 1] - cam) * dir;
+                    double den = zb + u * (za - zb);
+                    if (Math.Abs(den) > 1e-12) s = Math.Clamp(u * za / den, 0, 1);
                 }
+                depth = Depth(vp, pts[i] + (pts[i + 1] - pts[i]) * s);
             }
         }
         return depth;
@@ -120,8 +122,8 @@ public sealed partial class FrepPicker
     static bool NotBehind(double a, double b) => double.IsPositiveInfinity(b) || a <= b + Tol(b);
 
     /// The candidates at a click, already visible-filtered and merged: one per root (or leaf) and per Rhino object,
-    /// nearest first. <paramref name="leaf"/>: the Shift pick already decided by the outline rules.
-    static List<Candidate> Candidates(RhinoView view, System.Drawing.Point at, PickMode mode, FrepInstance? leaf, List<(RhinoObject Object, double Depth)> hits)
+    /// nearest first. <paramref name="leaves"/>: the Shift picks already decided by the outline rules.
+    static List<Candidate> Candidates(RhinoView view, System.Drawing.Point at, PickMode mode, IReadOnlyList<FrepInstance> leaves, List<(RhinoObject Object, double Depth)> hits)
     {
         var doc = view.Document;
         var vp = view.ActiveViewport;
@@ -142,6 +144,13 @@ public sealed partial class FrepPicker
 
         bool FrepVisible(double d) => NotBehind(d, opaque);
 
+        // The outline pass's rule: a cutter line hides only behind Rhino depth in front of both it and the F-rep; an added
+        // shape's line shows only where it is in front of the F-rep and of Rhino geometry.
+        var cutters = ControlOutlines.CutterObjects(doc);
+        bool ControlVisible(FrepInstance inst, double d) => cutters.Contains(inst.Object)
+            ? !(InFront(anyRhinoSurface, d) && InFront(anyRhinoSurface, frepD))
+            : NotBehind(d, frepD) && NotBehind(d, anyRhinoSurface);
+
         if (mode != PickMode.Leaf)
         {
             if (rootHit is { } rh && FrepVisible(rh.Depth)) Add(RootKey(rh.Root), RootCandidate(doc, rh.Root, rh.Depth));
@@ -159,17 +168,19 @@ public sealed partial class FrepPicker
                             break;
                         }
             }
-            var cutters = ControlOutlines.CutterObjects(doc);
             foreach (var (inst, curves) in ControlOutlines.Pickable(doc, vp))
             {
                 if (ScreenDistance(curves, vp, client) > RootOutlinePixels) continue;
                 double d = CurveDepth(curves, vp, client);
-                bool cutter = cutters.Contains(inst.Object);
-                bool visible = cutter ? !(InFront(anyRhinoSurface, d) && InFront(anyRhinoSurface, frepD)) : NotBehind(d, frepD) && NotBehind(d, anyRhinoSurface);
-                if (visible) Add(RootKey(inst.Root), RootCandidate(doc, inst.Root, d));
+                if (ControlVisible(inst, d)) Add(RootKey(inst.Root), RootCandidate(doc, inst.Root, d));
             }
         }
-        else if (leaf != null) Add(LeafKey(leaf), LeafCandidate(doc, leaf, LeafDepth(doc, vp, client, ray, leaf)));
+        else
+            foreach (var l in leaves)
+            {
+                double d = LeafDepth(doc, vp, client, ray, l);
+                if (ControlVisible(l, d)) Add(LeafKey(l), LeafCandidate(doc, l, d, withRoot: leaves.Count(x => x.Object == l.Object) > 1));
+            }
 
         foreach (var (o, d) in hits)
         {
@@ -183,9 +194,9 @@ public sealed partial class FrepPicker
         if (mode == PickMode.Remove)
         {
             var roots = FrepSelection.Roots(doc);
-            var leaves = FrepSelection.Leaves(doc);
-            list = list.Where(c => c.Root is { } r ? c.Leaf == null && roots.Contains(r) : c.Leaf is { } l ? leaves.Any(x => x.SamePath(l)) : doc.Objects.FindId(c.Object)?.IsSelected(false) > 0).ToList();
-            foreach (var l in leaves)
+            var selectedLeaves = FrepSelection.Leaves(doc);
+            list = list.Where(c => c.Root is { } r ? c.Leaf == null && roots.Contains(r) : c.Leaf is { } l ? selectedLeaves.Any(x => x.SamePath(l)) : doc.Objects.FindId(c.Object)?.IsSelected(false) > 0).ToList();
+            foreach (var l in selectedLeaves)
                 if (!list.Any(c => c.Leaf != null && c.Leaf.SamePath(l)) && ControlOutlines.Pickable(doc, vp).FirstOrDefault(p => p.Instance.SamePath(l)) is { Curves: { } cs } && ScreenDistance(cs, vp, client) <= OutlinePixels)
                     list.Add(LeafCandidate(doc, l, CurveDepth(cs, vp, client)));
         }
@@ -203,26 +214,25 @@ public sealed partial class FrepPicker
 
     static string RootKey(FrepOperand r) => r.IsNode ? "n" + r.NodeId : "o" + r.ObjectId;
 
-    static string LeafKey(FrepInstance l) => "l" + l.Object + "/" + string.Join(",", l.Path);
+    static string LeafKey(FrepInstance l) => "l" + RootKey(l.Root) + "/" + l.Object + "/" + string.Join(",", l.Path);
 
-    static Candidate RootCandidate(RhinoDoc doc, FrepOperand root, double depth)
+    static Candidate RootCandidate(RhinoDoc doc, FrepOperand root, double depth) =>
+        new(root, null, root.IsNode ? Guid.Empty : root.ObjectId, depth, TreeLabel(doc, root, cutter: false));
+
+    /// <paramref name="withRoot"/>: one shape reached through several roots; the row names the root it is reached through.
+    static Candidate LeafCandidate(RhinoDoc doc, FrepInstance leaf, double depth, bool withRoot = false)
     {
-        if (!root.IsNode) return new Candidate(root, null, root.ObjectId, depth, ShapeLabel(doc, root.ObjectId, cutter: false));
-        var op = FrepTrees.Get(doc).Find(root.NodeId)?.Op;
-        string kind = op switch { FrepOp.Difference => "difference", FrepOp.Intersect => "intersection", null => "blend", _ => op.ToString()!.ToLowerInvariant() };
-        if (op == FrepOp.Union) kind = "blend";
-        return new Candidate(root, null, Guid.Empty, depth, $"N{root.NodeId} ({kind})");
+        string label = TreeLabel(doc, FrepOperand.Object(leaf.Object), ControlOutlines.CutterObjects(doc).Contains(leaf.Object));
+        if (withRoot) label += ", in " + TreeLabel(doc, leaf.Root, cutter: false);
+        return new(null, leaf, leaf.Object, depth, label);
     }
 
-    static Candidate LeafCandidate(RhinoDoc doc, FrepInstance leaf, double depth) =>
-        new(null, leaf, leaf.Object, depth, ShapeLabel(doc, leaf.Object, ControlOutlines.CutterObjects(doc).Contains(leaf.Object)));
-
-    static string ShapeLabel(RhinoDoc doc, Guid id, bool cutter)
+    /// The row reads as the panel's tree does: its label, then its type in plain words.
+    static string TreeLabel(RhinoDoc doc, FrepOperand o, bool cutter)
     {
-        var o = doc.Objects.FindId(id);
-        string type = (o != null ? Sdf.SdfUserText.ReadType(o.Attributes) : null)?.ToLowerInvariant() ?? "shape";
-        string name = !string.IsNullOrWhiteSpace(o?.Name) ? o!.Name : type;
-        return cutter ? $"{name} (cutter, {type})" : $"{name} ({type})";
+        var (label, type) = Ui.UiController.TreeLabels(doc).TryGetValue(Ui.UiController.TreeKey(o), out var l) ? l : (o.IsNode ? $"N{o.NodeId}" : "Shape", "shape");
+        type = type.ToLowerInvariant();
+        return cutter ? $"{label} (cutter, {type})" : $"{label} ({type})";
     }
 
     static string RhinoLabel(RhinoObject o)
@@ -231,7 +241,7 @@ public sealed partial class FrepPicker
         return !string.IsNullOrWhiteSpace(o.Name) ? $"{o.Name} ({kind})" : kind;
     }
 
-    static void Apply(RhinoDoc doc, Candidate c, PickMode mode, string? note = null)
+    static void Apply(RhinoDoc doc, Candidate c, PickMode mode)
     {
         if (mode == PickMode.Remove)
         {
@@ -241,11 +251,7 @@ public sealed partial class FrepPicker
             doc.Views.Redraw();
             return;
         }
-        if (c.Leaf != null)
-        {
-            FrepSelection.SelectLeaf(doc, c.Leaf, add: false);
-            if (note != null) RhinoApp.WriteLine(note);
-        }
+        if (c.Leaf != null) FrepSelection.SelectLeaf(doc, c.Leaf, add: false);
         else if (c.Root is { } r) FrepSelection.SelectRoot(doc, r, add: false);
         else
         {
