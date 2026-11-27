@@ -88,7 +88,7 @@ public sealed class ShaderConduit : DisplayConduit
             bool late = WritesDepth(gpu, dp);
             // Control outlines first, so blends drawn over them hide what they cover. Captures (AI screenshots,
             // AiCapture.CleanCapture) show just the model.
-            if (!AiCapture.Active && !late) ControlOutlines.Draw(dp, e.RhinoDoc, selected: false);
+            if (!AiCapture.Active) ControlOutlines.Draw(dp, e.RhinoDoc, selected: false, cutters: late ? false : null);
             dp.Flush(); // Rhino batches curves; without this they land after (over) our GPU draw
             if (scene.Program != null)
                 drew |= DrawScene(gpu, dp, e.RhinoDoc, scene);
@@ -138,7 +138,7 @@ public sealed class ShaderConduit : DisplayConduit
             dp.PushDepthWriting(false);
             try
             {
-                ControlOutlines.Draw(dp, doc, selected: false, hidden: true);
+                ControlOutlines.Draw(dp, doc, selected: false, cutters: true, hidden: true);
                 dp.Flush();
             }
             finally
@@ -147,7 +147,7 @@ public sealed class ShaderConduit : DisplayConduit
                 dp.PopDepthTesting();
             }
         }
-        ControlOutlines.Draw(dp, doc, selected: false);
+        ControlOutlines.Draw(dp, doc, selected: false, cutters: true);
         dp.Flush();
     }
 
