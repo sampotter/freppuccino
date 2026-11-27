@@ -850,16 +850,8 @@ public static class FrepShaderGen
             {
                 if (n.IsGroup)
                 {
-                    var acc = BoundingBox.Empty;
                     for (int i = 0; i < n.Operands.Length; i++)
-                    {
-                        var mode = i == 0 ? FrepMode.Add : n.ModeAt(i);
-                        var ob = Of(n.Operands[i]);
-                        if (!ob.IsValid) continue;
-                        if (mode == FrepMode.Add) acc.Union(ob);
-                        else if (mode == FrepMode.Intersect && acc.IsValid) acc = BoundingBox.Intersection(acc, ob);
-                    }
-                    b = acc;
+                        if (i == 0 || n.ModeAt(i) != FrepMode.Subtract) b.Union(Of(n.Operands[i]));
                 }
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && warp.TryGetValue(n.Id, out var w)) b = Warped(b, w);
