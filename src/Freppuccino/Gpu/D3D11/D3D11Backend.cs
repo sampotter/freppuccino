@@ -61,6 +61,7 @@ public sealed class D3D11Backend : IGpuBackend
     public bool WroteDepth { get; private set; }
     float traceMinDepth, traceMaxDepth = 1;
     int traceSerial;
+    bool gbufferDrawn;
     public (Guid Viewport, int Serial, int W, int H) TraceSource { get; private set; }
 
     [SupportedOSPlatform("windows")]
@@ -140,8 +141,9 @@ public sealed class D3D11Backend : IGpuBackend
             {
                 var m = pipeline.Viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
                 for (int i = 0; i < 16; i++) clip[i] = (float)m[i / 4, i % 4];
+                gbufferDrawn = false;
                 WroteDepth = DrawOccludedSwapped(ctx, draw, Occlusion);
-                if (targetW > 0) TraceSource = (pipeline.Viewport?.Id ?? Guid.Empty, ++traceSerial, targetW, targetH);
+                if (gbufferDrawn) TraceSource = (pipeline.Viewport?.Id ?? Guid.Empty, ++traceSerial, targetW, targetH);
             }
             else if (swap) DrawSwapped(ctx, draw);
             else DrawManual(ctx, draw);
@@ -269,6 +271,7 @@ public sealed class D3D11Backend : IGpuBackend
             RSSetViewports(ctx, [new Viewport { Width = w, Height = h, MaxDepth = 1 }]);
             Bind(ctx, draw);
             D3D11Native.Draw(ctx, draw.VertexCount, 0);
+            gbufferDrawn = true;
 
             PSSetSamplers(ctx, 0, [pointSampler, linearSampler]);
             VSSetShader(ctx, postVs);

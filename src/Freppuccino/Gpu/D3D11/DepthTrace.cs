@@ -11,7 +11,20 @@ public static unsafe class DepthTrace
 {
     const int Frames = 30;
     static Guid? viewport;
-    static int frame, frameSerial = -1;
+    static int frame, frameSerial = -1, baseline = int.MaxValue;
+
+    public static void Begin(DisplayPipeline dp, D3D11Backend? backend)
+    {
+        if (Armed(dp)) baseline = backend?.TraceSource.Serial ?? int.MaxValue;
+    }
+
+    public static string GuardNote(uint samples, uint format)
+    {
+        uint* td = stackalloc uint[11];
+        td[4] = format; td[5] = samples;
+        ReadDepth(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, td, [], out var note);
+        return note;
+    }
     static StringBuilder? log;
     static IntPtr device, ctxState, vs, psMs, ps1;
 
@@ -94,7 +107,7 @@ public static unsafe class DepthTrace
             var grid = Enumerable.Range(0, 64).Select(i => (X: (int)(w * (0.1 + 0.8 * (i % 8) / 7.0)), Y: (int)(h * (0.1 + 0.8 * (i / 8) / 7.0)))).ToArray();
             var source = backend?.TraceSource ?? default;
             bool here = backend != null && source.Viewport == vp?.Id;
-            if (stage is "pre-after-early" or "post-after-fallback") frameSerial = here ? source.Serial : -1;
+            if (stage is "pre-after-early" or "post-after-fallback") frameSerial = here && source.Serial > baseline ? source.Serial : -1;
             if (stage == "post-entry-no-pre") frameSerial = -1;
             bool current = here && source.Serial == frameSerial;
             sb.Append($" gpos {(backend == null ? "none" : $"vp {source.Viewport.ToString()[..8]} draw {source.Serial} {source.W}x{source.H}")} {(current ? "current" : "stale")}");
@@ -163,6 +176,8 @@ public static unsafe class DepthTrace
         int fmt = SrvFormat(td[4]);
         if (samples < 1 || samples > 8) { note = $"unsupported-msaa-{samples}"; return null; }
         if (fmt < 0) { note = $"unsupported-format-{td[4]}"; return null; }
+        if (ctx == IntPtr.Zero) { note = "no-context"; return null; }
+        if (ContextType(ctx) != DEVICE_CONTEXT_IMMEDIATE) { note = "deferred-context"; return null; }
         if (!EnsureSetup(dev)) { note = "setup-failed"; return null; }
         IntPtr srv = IntPtr.Zero, tex = IntPtr.Zero, rtv = IntPtr.Zero, cb = IntPtr.Zero, st = IntPtr.Zero;
         try
