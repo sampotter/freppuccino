@@ -62,7 +62,13 @@ public sealed class D3D11Backend : IGpuBackend
 
     public bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, false);
 
-    public bool DrawOccluded(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, true);
+    public bool DrawOccluded(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms, bool depth = true)
+    {
+        writeDepth = depth;
+        return Draw(pipeline, program, uniforms, true);
+    }
+
+    bool writeDepth;
 
     bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms, bool occluded)
     {
@@ -245,13 +251,13 @@ public sealed class D3D11Backend : IGpuBackend
             RSSetViewports(ctx, vps[..nvp]);
             PSSetShader(ctx, compositePs);
             PSSetShaderResources(ctx, 0, [gPos.Srv, gNrm.Srv, gColor.Srv, aoA.Srv]);
-            OMSetDepthStencilState(ctx, depthDss, 0);
+            OMSetDepthStencilState(ctx, writeDepth ? depthDss : dss, 0);
             SetPost(ctx, w, h, hw, hh, 0, 0, vp.X, vp.Y, 0, ao ? 1 : 0, vp.MinDepth, vp.MaxDepth);
             D3D11Native.Draw(ctx, 3, 0);
             OMSetDepthStencilState(ctx, dss, 0);
             SetPost(ctx, w, h, hw, hh, 0, 0, vp.X, vp.Y, 1, 0, vp.MinDepth, vp.MaxDepth);
             D3D11Native.Draw(ctx, 3, 0);
-            return dsv != IntPtr.Zero;
+            return writeDepth && dsv != IntPtr.Zero;
         }
         finally
         {
