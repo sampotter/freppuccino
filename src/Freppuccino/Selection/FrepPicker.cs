@@ -284,7 +284,7 @@ public sealed class FrepPicker : MouseCallback
 
     static bool RhinoUnder(RhinoView view, System.Drawing.Point at)
     {
-        var pick = new Rhino.Input.Custom.PickContext { View = view, PickStyle = Rhino.Input.Custom.PickStyle.PointPick };
+        using var pick = new Rhino.Input.Custom.PickContext { View = view, PickStyle = Rhino.Input.Custom.PickStyle.PointPick };
         pick.SetPickTransform(view.ActiveViewport.GetPickTransform(at));
         pick.UpdateClippingPlanes();
         return view.Document.Objects.PickObjects(pick).Any(r => r.Object() is { } o && o is not FrepCarrier &&
