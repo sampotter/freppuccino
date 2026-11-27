@@ -9,7 +9,7 @@ namespace Freppuccino.Gpu.D3D11;
 
 public static unsafe class DepthTrace
 {
-    const int Frames = 30;
+    static int frames = 5;
     static Guid? viewport;
     static int frame, frameSerial = -1, baseline = int.MaxValue;
 
@@ -104,8 +104,9 @@ public static unsafe class DepthTrace
 
     public static bool Recording => viewport != null;
 
-    public static void Arm(RhinoViewport vp)
+    public static void Arm(RhinoViewport vp, int count = 5)
     {
+        frames = count;
         viewport = vp.Id;
         frame = 0;
         log = new StringBuilder();
@@ -119,7 +120,7 @@ public static unsafe class DepthTrace
         if (log == null || !OperatingSystem.IsWindows()) return;
         try { log.AppendLine(Read(dp, stage, backend, early, earlyWrote)); }
         catch (Exception ex) { log.AppendLine($"{frame} {stage} error {ex.GetType().Name}: {ex.Message}"); }
-        if (frame >= Frames && stage == "fore") Finish();
+        if (frame >= frames && stage == "fore") Finish();
     }
 
     static void Finish()
@@ -128,7 +129,7 @@ public static unsafe class DepthTrace
         File.WriteAllText(path, log!.ToString());
         viewport = null;
         log = null;
-        RhinoApp.WriteLine($"FrepDepthTrace: {Frames} frames written to {path}");
+        RhinoApp.WriteLine($"FrepDepthTrace: {frames} frames written to {path}");
         RhinoApp.InvokeOnUiThread(() => { foreach (var doc in RhinoDoc.OpenDocuments()) doc.Views.Redraw(); });
     }
 
@@ -151,7 +152,7 @@ public static unsafe class DepthTrace
         {
             vp.GetFrustum(out _, out _, out _, out _, out var cn, out var cf);
             var cur = vp.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
-            sb.Append($" cam ({vp.CameraLocation.X:G6},{vp.CameraLocation.Y:G6},{vp.CameraLocation.Z:G6}) dir ({vp.CameraDirection.X:G4},{vp.CameraDirection.Y:G4},{vp.CameraDirection.Z:G4}) nf {cn:G6}..{cf:G6}");
+            sb.Append($" cam ({vp.CameraLocation.X:G6},{vp.CameraLocation.Y:G6},{vp.CameraLocation.Z:G6}) target ({vp.CameraTarget.X:G6},{vp.CameraTarget.Y:G6},{vp.CameraTarget.Z:G6}) dir ({vp.CameraDirection.X:G4},{vp.CameraDirection.Y:G4},{vp.CameraDirection.Z:G4}) nf {cn:G6}..{cf:G6}");
             if (backend != null)
             {
                 var d = backend.TraceDraw;
