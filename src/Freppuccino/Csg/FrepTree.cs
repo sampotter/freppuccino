@@ -504,8 +504,11 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         }
     }
 
+    const int ModesMarker = 0x5345444D;
+
     public void WriteModes(BinaryArchiveWriter w)
     {
+        w.WriteInt(ModesMarker);
         w.WriteInt(Nodes.Count);
         foreach (var n in Nodes)
         {
@@ -517,13 +520,20 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
 
     public FrepTree ReadModes(BinaryArchiveReader r)
     {
+        if (r.ReadInt() != ModesMarker) throw new InvalidDataException("row modes not found where expected");
         int count = r.ReadInt();
         if (count != Nodes.Count) throw new InvalidDataException("row modes don't match the tree");
         var nodes = Nodes.ToBuilder();
         for (int i = 0; i < count; i++)
         {
-            var modes = new FrepMode[r.ReadInt()];
-            for (int j = 0; j < modes.Length; j++) modes[j] = (FrepMode)r.ReadInt();
+            int length = r.ReadInt();
+            if (length < 0 || length > nodes[i].Operands.Length) throw new InvalidDataException("row modes don't match the tree");
+            var modes = new FrepMode[length];
+            for (int j = 0; j < modes.Length; j++)
+            {
+                modes[j] = (FrepMode)r.ReadInt();
+                if (!Enum.IsDefined(modes[j])) throw new InvalidDataException("unknown row mode");
+            }
             if (nodes[i].IsGroup && modes.Length == nodes[i].Operands.Length) nodes[i] = nodes[i] with { Modes = [.. modes] };
         }
         return this with { Nodes = nodes.ToImmutable() };
