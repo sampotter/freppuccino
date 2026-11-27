@@ -83,6 +83,7 @@ public sealed class ShaderConduit : DisplayConduit
             var wrote = DrawModel(gpu, dp, e.RhinoDoc, cutters: false, depth: true).WroteDepth;
             earlyWroteDepth = wrote;
             early = dp.Viewport?.Id;
+            Trace(dp, "pre-after-early", early, wrote, frame: true);
         }
         catch (Exception ex)
         {
@@ -113,6 +114,7 @@ public sealed class ShaderConduit : DisplayConduit
     {
         var dp = e.Display;
         bool late = early != null && early == dp.Viewport?.Id, wroteDepth = late && earlyWroteDepth;
+        Trace(dp, late ? "post-entry" : "post-entry-no-pre", early, wroteDepth, frame: !late);
         early = null;
         if (!FreppuccinoDisplayMode.IsActive(dp)) return;
         try
@@ -120,6 +122,7 @@ public sealed class ShaderConduit : DisplayConduit
             var gpu = GpuBackends.For(dp);
             if (gpu == null) return;
             bool drew = !late && DrawModel(gpu, dp, e.RhinoDoc, null, depth: false).Drew;
+            if (!late) Trace(dp, "post-after-fallback", null, false);
             if (!AiCapture.Active && late) DrawDepthTestedOutlines(dp, e.RhinoDoc, wroteDepth);
 
             if (!AiCapture.Active) // AI screenshots: just the model
@@ -159,8 +162,16 @@ public sealed class ShaderConduit : DisplayConduit
 
     static bool DrewDepth(IGpuBackend gpu) => gpu is Gpu.D3D11.D3D11Backend { WroteDepth: true };
 
+    static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false)
+    {
+        if (!Gpu.D3D11.DepthTrace.Armed(dp)) return;
+        if (frame) Gpu.D3D11.DepthTrace.Frame();
+        Gpu.D3D11.DepthTrace.Sample(dp, stage, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend, early, wrote);
+    }
+
     static void DrawDepthTestedOutlines(DisplayPipeline dp, RhinoDoc doc, bool wroteDepth)
     {
+        Trace(dp, "post-before-faint", null, wroteDepth);
         if (wroteDepth)
         {
             dp.PushDepthTesting(false);
@@ -176,13 +187,17 @@ public sealed class ShaderConduit : DisplayConduit
                 dp.PopDepthTesting();
             }
         }
+        Trace(dp, "post-before-solid", null, wroteDepth);
         ControlOutlines.Draw(dp, doc, selected: false, cutters: true);
         dp.Flush();
+        Trace(dp, "post-after-solid", null, wroteDepth);
     }
 
     static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms, bool depth) =>
         gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.DrawOccluded(dp, program, uniforms, depth) : gpu.Draw(dp, program, uniforms);
 #else
+    static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false) { }
+
     static bool WritesDepth(IGpuBackend gpu, DisplayPipeline dp) => false;
 
     static bool DrewDepth(IGpuBackend gpu) => false;
@@ -196,6 +211,7 @@ public sealed class ShaderConduit : DisplayConduit
     protected override void DrawForeground(DrawEventArgs e)
     {
         var dp = e.Display;
+        if (dp != null) Trace(dp, "fore", null, false);
         if (dp == null || AiCapture.Active || !FreppuccinoDisplayMode.IsActive(dp) || GpuBackends.For(dp) == null) return;
         try
         {

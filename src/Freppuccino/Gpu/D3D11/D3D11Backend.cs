@@ -59,6 +59,38 @@ public sealed class D3D11Backend : IGpuBackend
 
     public static float DepthBiasPx { get; set; } = 0f;
     public bool WroteDepth { get; private set; }
+    float traceMinDepth, traceMaxDepth = 1;
+
+    [SupportedOSPlatform("windows")]
+    public unsafe (float W, double Depth)[]? TraceFrepDepth(IntPtr dev, IntPtr ctx, (int X, int Y)[] px)
+    {
+        if (gPos.Tex == IntPtr.Zero || dev != device) return null;
+        IntPtr st = IntPtr.Zero;
+        try
+        {
+            Check(CreateTexture2D(dev, new Texture2DDesc { Width = 64, Height = 1, MipLevels = 1, ArraySize = 1, Format = FORMAT_R32G32B32A32_FLOAT, SampleCount = 1, Usage = 3, CPUAccessFlags = 0x20000 }, out st), "CreateTexture2D");
+            uint* box = stackalloc uint[6];
+            for (int i = 0; i < px.Length && i < 64; i++)
+            {
+                int x = Math.Clamp(px[i].X, 0, targetW - 1), y = Math.Clamp(px[i].Y, 0, targetH - 1);
+                box[0] = (uint)x; box[1] = (uint)y; box[2] = 0; box[3] = (uint)x + 1; box[4] = (uint)y + 1; box[5] = 1;
+                ((delegate* unmanaged<IntPtr, IntPtr, uint, uint, uint, uint, IntPtr, uint, uint*, void>)(*(void***)ctx)[46])(ctx, st, 0, (uint)i, 0, 0, gPos.Tex, 0, box);
+            }
+            void** map = stackalloc void*[2];
+            if (((delegate* unmanaged<IntPtr, IntPtr, uint, int, uint, void**, int>)(*(void***)ctx)[14])(ctx, st, 0, 1, 0, map) < 0) return null;
+            var f = (float*)map[0];
+            var r = new (float, double)[Math.Min(px.Length, 64)];
+            for (int i = 0; i < r.Length; i++)
+            {
+                double x = f[i * 4], y = f[i * 4 + 1], z = f[i * 4 + 2];
+                double cz = clip[8] * x + clip[9] * y + clip[10] * z + clip[11], cw = clip[12] * x + clip[13] * y + clip[14] * z + clip[15];
+                r[i] = (f[i * 4 + 3], traceMinDepth + (traceMaxDepth - traceMinDepth) * Math.Clamp(0.5 - 0.5 * cz / cw, 0, 1));
+            }
+            ((delegate* unmanaged<IntPtr, IntPtr, uint, void>)(*(void***)ctx)[15])(ctx, st, 0);
+            return r;
+        }
+        finally { SafeRelease(ref st); }
+    }
 
     public bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, false);
 
@@ -252,6 +284,7 @@ public sealed class D3D11Backend : IGpuBackend
             PSSetShader(ctx, compositePs);
             PSSetShaderResources(ctx, 0, [gPos.Srv, gNrm.Srv, gColor.Srv, aoA.Srv]);
             OMSetDepthStencilState(ctx, writeDepth ? depthDss : dss, 0);
+            traceMinDepth = vp.MinDepth; traceMaxDepth = vp.MaxDepth;
             SetPost(ctx, w, h, hw, hh, 0, 0, vp.X, vp.Y, 0, ao ? 1 : 0, vp.MinDepth, vp.MaxDepth);
             D3D11Native.Draw(ctx, 3, 0);
             OMSetDepthStencilState(ctx, dss, 0);
