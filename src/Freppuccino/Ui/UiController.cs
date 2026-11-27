@@ -364,7 +364,7 @@ public sealed class UiController : IDisposable
                 var names = n.Op.ParamNames();
                 bool refOk = doc.Objects.FindId(n.Ref) is { IsDeleted: false } r && FrepRefs.Fits(n.Op, r.Geometry);
                 return built[n.Id] = new SceneNode(
-                    Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
+                    Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: $"{n.Op} {n.Id}", Visible: !n.Hidden, Locked: false,
                     Op: ToKind(n.Op), Params: names.Select((name, i) => (name, i)).ToDictionary(x => x.name, x => n.Param(x.i)),
                     K: null,
                     Children: children, Ref: ObjectKey(n.Ref), RefMissing: refOk ? null : true);
