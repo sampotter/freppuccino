@@ -14,7 +14,7 @@ public class FrepDepthTraceCommand : Command
         if (doc.Views.ActiveView is not { } view) return Result.Nothing;
 #if RHINO9
         Gpu.D3D11.DepthTrace.Arm(view.ActiveViewport);
-        RhinoApp.WriteLine("FrepDepthTrace: recording the next 30 frames of this viewport; keep working as usual.");
+        RhinoApp.WriteLine("FrepDepthTrace: recording the next 30 frames of this viewport; keep working as usual. A small black marker line appears in the top-left corner while it records.");
         view.Redraw();
         return Result.Success;
 #else

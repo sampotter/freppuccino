@@ -175,6 +175,7 @@ public sealed class ShaderConduit : DisplayConduit
 
     static void DrawDepthTestedOutlines(DisplayPipeline dp, RhinoDoc doc, bool wroteDepth)
     {
+        if (Gpu.D3D11.DepthTrace.Armed(dp)) Gpu.D3D11.DepthTrace.Reference(dp, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend);
         Trace(dp, "post-before-faint", null, wroteDepth);
         if (wroteDepth)
         {

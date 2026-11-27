@@ -30,6 +30,76 @@ public static unsafe class DepthTrace
 
     public static bool InjectFailure { get; set; }
 
+    [SupportedOSPlatform("windows")]
+    static float[]? Corner(DisplayPipeline dp, out string note)
+    {
+        note = "";
+        var dev = dp.GetDirect3d11Device();
+        var ctx = dp.GetDirect3d11DeviceContext();
+        Span<IntPtr> rtvs = stackalloc IntPtr[8];
+        IntPtr dsv = IntPtr.Zero, res = IntPtr.Zero;
+        try
+        {
+            OMGetRenderTargets(ctx, rtvs, out dsv);
+            if (dsv == IntPtr.Zero) { note = "no-dsv"; return null; }
+            ((delegate* unmanaged<IntPtr, IntPtr*, void>)V(dsv)[7])(dsv, &res);
+            uint* td = stackalloc uint[11];
+            ((delegate* unmanaged<IntPtr, uint*, void>)V(res)[10])(res, td);
+            return ReadDepth(dev, ctx, res, td, [(6, 6)], out note)?[0];
+        }
+        finally
+        {
+            for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
+            SafeRelease(ref res);
+            SafeRelease(ref dsv);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    public static void Reference(DisplayPipeline dp, D3D11Backend? backend)
+    {
+        if (log == null || !Armed(dp) || dp.Viewport is not { } vp) return;
+        try
+        {
+            var line = vp.ClientToWorld(new Rhino.Geometry.Point2d(6.5, 6.5));
+            var q = line.PointAt(0.5);
+            var x = vp.CameraX;
+            vp.GetFrustum(out var l, out var r, out _, out _, out var near, out _);
+            double foot = (r - l) / Math.Max(1, vp.Size.Width) * (vp.IsPerspectiveProjection ? (q - vp.CameraLocation) * vp.CameraDirection / vp.CameraDirection.Length / near : 1);
+            var before = Corner(dp, out var beforeNote);
+            dp.DrawLine(q - x * foot * 3, q + x * foot * 3, System.Drawing.Color.Black, 3);
+            dp.Flush();
+            var dev = dp.GetDirect3d11Device();
+            var ctx = dp.GetDirect3d11DeviceContext();
+            Span<IntPtr> rtvs = stackalloc IntPtr[8];
+            IntPtr dsv = IntPtr.Zero, res = IntPtr.Zero;
+            try
+            {
+                OMGetRenderTargets(ctx, rtvs, out dsv);
+                if (dsv == IntPtr.Zero) { log.AppendLine($"{frame} ref no-dsv"); return; }
+                ((delegate* unmanaged<IntPtr, IntPtr*, void>)V(dsv)[7])(dsv, &res);
+                uint* td = stackalloc uint[11];
+                ((delegate* unmanaged<IntPtr, uint*, void>)V(res)[10])(res, td);
+                var buf = ReadDepth(dev, ctx, res, td, [(6, 6)], out var note);
+                var dssAfter = OMGetDepthStencilState(ctx, out _);
+                int* dd = stackalloc int[13];
+                if (dssAfter != IntPtr.Zero) { ((delegate* unmanaged<IntPtr, int*, void>)V(dssAfter)[7])(dssAfter, dd); SafeRelease(ref dssAfter); }
+                bool changed = before != null && buf != null && !before.SequenceEqual(buf[0]);
+                double Ours(Rhino.Geometry.Transform c) { double cz = c[2, 0] * q.X + c[2, 1] * q.Y + c[2, 2] * q.Z + c[2, 3], cw = c[3, 0] * q.X + c[3, 1] * q.Y + c[3, 2] * q.Z + c[3, 3]; return 0.5 - 0.5 * cz / cw; }
+                var cur = vp.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+                string drawn = backend != null ? Ours(backend.TraceDraw.Clip).ToString("0.000000") : "n/a";
+                log.AppendLine($"{frame} ref q ({q.X:G6},{q.Y:G6},{q.Z:G6}) px (6,6) before {(before != null ? string.Join("/", before.Select(d => d.ToString("0.000000"))) : beforeNote)} rhino-line {(buf != null ? string.Join("/", buf[0].Select(d => d.ToString("0.000000"))) : note)} written {changed} dss-after enable {dd[0]} write {dd[1]} func {dd[2]} ours-current {Ours(cur):0.000000} ours-at-draw {drawn}");
+            }
+            finally
+            {
+                for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
+                SafeRelease(ref res);
+                SafeRelease(ref dsv);
+            }
+        }
+        catch (Exception ex) { log.AppendLine($"{frame} ref error {ex.GetType().Name}: {ex.Message}"); }
+    }
+
     public static bool Armed(DisplayPipeline dp) => viewport != null && dp.Viewport?.Id == viewport;
 
     public static void Arm(RhinoViewport vp)
@@ -57,6 +127,7 @@ public static unsafe class DepthTrace
         viewport = null;
         log = null;
         RhinoApp.WriteLine($"FrepDepthTrace: {Frames} frames written to {path}");
+        RhinoApp.InvokeOnUiThread(() => { foreach (var doc in RhinoDoc.OpenDocuments()) doc.Views.Redraw(); });
     }
 
     [DllImport("user32.dll")]
@@ -74,6 +145,19 @@ public static unsafe class DepthTrace
         uint dpi = vp?.ParentView is { } view ? GetDpiForWindow(view.Handle) : 0;
         sb.Append($"{frame} {stage} vp '{vp?.Name}' {vp?.Size.Width}x{vp?.Size.Height} dpi {dpi} dynamic {dp.IsDynamicDisplay} early {(early?.ToString()[..8] ?? "none")} wrote {earlyWrote}");
         sb.Append($" depthMode {dp.DepthMode} zbias {dp.ZBiasMode}");
+        if (vp != null)
+        {
+            vp.GetFrustum(out _, out _, out _, out _, out var cn, out var cf);
+            var cur = vp.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+            sb.Append($" cam ({vp.CameraLocation.X:G6},{vp.CameraLocation.Y:G6},{vp.CameraLocation.Z:G6}) dir ({vp.CameraDirection.X:G4},{vp.CameraDirection.Y:G4},{vp.CameraDirection.Z:G4}) nf {cn:G6}..{cf:G6}");
+            if (backend != null)
+            {
+                var d = backend.TraceDraw;
+                double diff = 0;
+                for (int i = 0; i < 16; i++) diff = Math.Max(diff, Math.Abs(cur[i / 4, i % 4] - d.Clip[i / 4, i % 4]) / Math.Max(1e-12, Math.Abs(d.Clip[i / 4, i % 4]) + 1e-9));
+                sb.Append($" drawnf {d.Near:G6}..{d.Far:G6} clipdiff {diff:G3}");
+            }
+        }
         if (dev == IntPtr.Zero || ctx == IntPtr.Zero) return sb.Append(" no-d3d").ToString();
 
         Span<IntPtr> rtvs = stackalloc IntPtr[8];

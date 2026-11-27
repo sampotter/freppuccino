@@ -63,6 +63,7 @@ public sealed class D3D11Backend : IGpuBackend
     int traceSerial;
     bool gbufferDrawn;
     public (Guid Viewport, int Serial, int W, int H) TraceSource { get; private set; }
+    public (Rhino.Geometry.Transform Clip, double Near, double Far) TraceDraw { get; private set; }
 
     [SupportedOSPlatform("windows")]
     public unsafe (float W, double Depth)[]? TraceFrepDepth(IntPtr dev, IntPtr ctx, (int X, int Y)[] px)
@@ -141,6 +142,8 @@ public sealed class D3D11Backend : IGpuBackend
             {
                 var m = pipeline.Viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
                 for (int i = 0; i < 16; i++) clip[i] = (float)m[i / 4, i % 4];
+                pipeline.Viewport.GetFrustum(out _, out _, out _, out _, out var fn, out var ff);
+                TraceDraw = (m, fn, ff);
                 gbufferDrawn = false;
                 WroteDepth = DrawOccludedSwapped(ctx, draw, Occlusion);
                 if (gbufferDrawn) TraceSource = (pipeline.Viewport?.Id ?? Guid.Empty, ++traceSerial, targetW, targetH);
