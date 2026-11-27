@@ -319,7 +319,7 @@ public sealed class UiController : IDisposable
                     Children: children, Ref: ObjectKey(n.Ref), RefMissing: refOk ? null : true);
             }
             return built[n.Id] = new SceneNode(
-                Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
+                Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.IsGroup ? $"Group {n.Id}" : n.Name, Visible: !n.Hidden, Locked: false,
                 Op: ToKind(n.Op), K: n.K, Children: children,
                 Placement: n.IsGroup ? PlacementKey(Placements(tree, n.Id, memo)) : null,
                 Modes: n.IsGroup ? [.. Enumerable.Range(0, n.Operands.Length).Select(i => ModeKey(n.ModeAt(i)))] : null);
