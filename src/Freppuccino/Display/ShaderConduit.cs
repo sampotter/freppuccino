@@ -86,7 +86,7 @@ public sealed class ShaderConduit : DisplayConduit
             if (GpuBackends.For(dp) is not { } gpu || !WritesDepth(gpu, dp)) return;
             bool own = OwnOutlinesPossible(gpu, dp);
             int before = GBufferSerial(gpu);
-            var wrote = DrawModel(gpu, dp, e.RhinoDoc, cutters: own ? false : null, depth: true).WroteDepth;
+            var wrote = DrawModel(gpu, dp, e.RhinoDoc, curves: !own, depth: true).WroteDepth;
             int after = GBufferSerial(gpu);
             earlyWroteDepth = wrote;
             earlyOwnOutlines = own;
@@ -101,7 +101,7 @@ public sealed class ShaderConduit : DisplayConduit
         }
     }
 
-    (bool Drew, bool WroteDepth) DrawModel(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, bool? cutters, bool depth)
+    (bool Drew, bool WroteDepth) DrawModel(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, bool curves, bool depth)
     {
         var scene = FrepScene.Get(doc);
         if (scene.Dropped > 0 && !loggedCap)
@@ -111,12 +111,12 @@ public sealed class ShaderConduit : DisplayConduit
         }
         // Control outlines first, so blends drawn over them hide what they cover. Captures (AI screenshots,
         // AiCapture.CleanCapture) show just the model.
-        if (!AiCapture.Active)
+        if (!AiCapture.Active && curves)
         {
             if (depth) dp.PushDepthWriting(false);
             try
             {
-                ControlOutlines.Draw(dp, doc, selected: false, cutters: cutters);
+                ControlOutlines.Draw(dp, doc, selected: false);
                 dp.Flush(); // Rhino batches curves; without this they land after (over) our GPU draw
             }
             finally
@@ -143,7 +143,7 @@ public sealed class ShaderConduit : DisplayConduit
             var gpu = GpuBackends.For(dp);
             if (gpu == null) return;
             if (!late) TraceBegin(dp);
-            bool drew = !late && DrawModel(gpu, dp, e.RhinoDoc, null, depth: false).Drew;
+            bool drew = !late && DrawModel(gpu, dp, e.RhinoDoc, curves: true, depth: false).Drew;
             if (!late) Trace(dp, "post-after-fallback", null, false);
             if (!AiCapture.Active && own) DrawOwnOutlines(gpu, dp, e.RhinoDoc, serial, wroteDepth);
 
@@ -168,7 +168,7 @@ public sealed class ShaderConduit : DisplayConduit
     static bool DrawScene(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, FrepSceneData scene, bool depth)
     {
         var program = scene.Program!;
-        var uniforms = FrepShaderGen.SceneUniforms(dp.Viewport, scene, Selection.FrepSelection.Roots(doc));
+        var uniforms = FrepShaderGen.SceneUniforms(dp.Viewport, scene, Selection.FrepSelection.DrawnRoots(doc));
         if (DrawProgram(gpu, dp, program, uniforms, depth))
         {
             lastGood[doc.RuntimeSerialNumber] = program;
@@ -202,8 +202,9 @@ public sealed class ShaderConduit : DisplayConduit
             loggedOutlineSkip = true;
             return;
         }
-        var endpoints = ControlOutlines.Segments(dp, doc, cutters: true);
-        d3d.DrawOutlines(dp, serial, endpoints, ControlOutlines.UnselectedColor, ControlOutlines.HiddenAlpha / 255f, (float)(0.5 * Math.Ceiling(dp.DpiScale - 1e-3)), (float)OutlinePullPx);
+        float halfWidth = (float)(0.5 * Math.Ceiling(dp.DpiScale - 1e-3));
+        d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: true), ControlOutlines.UnselectedColor, ControlOutlines.HiddenAlpha / 255f, halfWidth, (float)OutlinePullPx);
+        d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: false), ControlOutlines.UnselectedColor, 1f, halfWidth, (float)OutlinePullPx, added: true);
         Trace(dp, "post-after-outlines", null, wroteDepth);
     }
 

@@ -126,9 +126,28 @@
         </text>
         <left_macro_id>51f0c132-c455-1ab5-d328-a8df661def57</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="9b4e0d27-61c8-4f5a-8e3b-c27a19d6f054" button_style="spacer" />
+      <tool_bar_item guid="5c1e8a42-7d93-4b06-a2f8-91e3d6c0b417">
+        <text>
+          <locale_1033>Display</locale_1033>
+        </text>
+        <left_macro_id>a7d24f19-3e85-4c60-b1d9-6f0e2c8a5b93</left_macro_id>
+      </tool_bar_item>
     </tool_bar>
   </tool_bars>
   <macros>
+    <macro_item guid="a7d24f19-3e85-4c60-b1d9-6f0e2c8a5b93" bitmap_id="e2b97c05-14d8-4f3a-9c6e-58a0d3f71b2c">
+      <button_text>
+        <locale_1033>Display</locale_1033>
+      </button_text>
+      <menu_text>
+        <locale_1033>Display</locale_1033>
+      </menu_text>
+      <tooltip>
+        <locale_1033>Display settings</locale_1033>
+      </tooltip>
+      <script>! _FrepDisplay</script>
+    </macro_item>
     <macro_item guid="b5d0fff3-4b51-acce-3cc8-d28d1673c40c" bitmap_id="a985497e-6171-6a08-1868-da55a972ee13">
       <button_text>
         <locale_1033>Box</locale_1033>
@@ -344,6 +363,14 @@
     </macro_item>
   </macros>
   <icons>
+    <icon guid="e2b97c05-14d8-4f3a-9c6e-58a0d3f71b2c">
+      <light>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="#3B2620" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 6.5H20.5"/><path d="M3.5 12H20.5"/><path d="M3.5 17.5H20.5"/></g><g fill="#E0954A" stroke="#3B2620" stroke-width="1.6"><circle cx="15.5" cy="6.5" r="2.4"/><circle cx="8.5" cy="12" r="2.4"/><circle cx="13" cy="17.5" r="2.4"/></g></svg>
+      </light>
+      <dark>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="#FBEFE2" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 6.5H20.5"/><path d="M3.5 12H20.5"/><path d="M3.5 17.5H20.5"/></g><g fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6"><circle cx="15.5" cy="6.5" r="2.4"/><circle cx="8.5" cy="12" r="2.4"/><circle cx="13" cy="17.5" r="2.4"/></g></svg>
+      </dark>
+    </icon>
     <icon guid="b33b2a55-1af8-86c0-811d-875514fc4fd2">
       <light>
         <svg width="100%" height="100%" viewBox="0 0 500 1073" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:1.5;">

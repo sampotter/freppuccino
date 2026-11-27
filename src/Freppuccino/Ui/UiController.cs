@@ -36,6 +36,7 @@ public sealed class UiController : IDisposable
     /// Replace the panel selection with one operation node and show the gumball on its leaves.
     public static void SelectNode(RhinoDoc doc, int id)
     {
+        using var scope = Selection.FrepSelection.Explicit();
         doc.Objects.UnselectAll();
         ClearNodes(doc);
         NodesOf(doc).Add(id);
@@ -330,6 +331,47 @@ public sealed class UiController : IDisposable
         return roots;
     }
 
+    static readonly Dictionary<string, string> PrimitiveLabels = new()
+    {
+        ["sdBox"] = "Box", ["sdSphere"] = "Sphere", ["sdCappedCylinder"] = "Cylinder", ["sdCappedCone"] = "Cone",
+        ["sdPyramid"] = "Pyramid", ["sdEllipsoid"] = "Ellipsoid", ["sdTorus"] = "Torus", ["sdUser"] = "Function",
+    };
+
+    static readonly Dictionary<string, string> OperationLabels = new()
+    {
+        [OperationKind.Union] = "Union", [OperationKind.Subtract] = "Subtract", [OperationKind.Intersect] = "Intersect",
+        [OperationKind.Twist] = "Twist", [OperationKind.Bend] = "Bend", [OperationKind.Repeat] = "Repeat",
+        [OperationKind.Blend] = "Blend", [OperationKind.Offset] = "Offset",
+    };
+
+    static string TypeLabel(SceneNode n) => n.Kind == SceneNodeKind.Operation
+        ? n.Op is { } op && OperationLabels.TryGetValue(op, out var o) ? o : "Operation"
+        : n.SdfType is { } t ? PrimitiveLabels.TryGetValue(t, out var p) ? p : t : "Primitive";
+
+    /// What the panel's tree shows for each node, as (label, type): the Rhino name if set, else "Sphere 1", "Union 2", ...
+    /// in tree order (the same numbering as the panel's labelNodes). Keyed by node name ("N3") or object id.
+    public static Dictionary<string, (string Label, string Type)> TreeLabels(RhinoDoc doc)
+    {
+        var labels = new Dictionary<string, (string, string)>();
+        var counters = new Dictionary<string, int>();
+        void Walk(IEnumerable<SceneNode> nodes)
+        {
+            foreach (var n in nodes)
+            {
+                string type = TypeLabel(n);
+                string stem = n.Kind == SceneNodeKind.Primitive && n.Custom == true ? $"Custom {type}-based FRep" : type;
+                int i = counters.GetValueOrDefault(stem) + 1;
+                counters[stem] = i;
+                labels[n.Id] = (n.Custom == true ? $"{stem} {i}" : n.Name ?? $"{stem} {i}", type);
+                if (n.Children != null) Walk(n.Children);
+            }
+        }
+        Walk(BuildScene(doc));
+        return labels;
+    }
+
+    public static string TreeKey(FrepOperand o) => o.IsNode ? NodeKey(o.NodeId) : ObjectKey(o.ObjectId);
+
     static SceneNode Missing(string id) =>
         new(id, SceneNodeKind.Primitive, "(deleted)", Visible: false, Locked: false, Missing: true);
 
@@ -439,7 +481,7 @@ public sealed class UiController : IDisposable
                     OnShaderBuilds();
                     break;
                 case "select":
-                    Select(doc, Parse<SelectRequest>(message));
+                    using (Selection.FrepSelection.Explicit()) Select(doc, Parse<SelectRequest>(message));
                     break;
                 case "setVisible":
                     SetVisible(doc, Parse<SetVisibleRequest>(message));
@@ -653,7 +695,11 @@ public sealed class UiController : IDisposable
             bool selected = obj.IsSelected(false) != 0;
             bool ok = doc.Objects.ModifyAttributes(obj, attrs, true) && doc.Objects.Replace(obj.Id, brep);
             if (!ok) brep.Dispose();
-            else if (selected) doc.Objects.Select(obj.Id);
+            else if (selected)
+            {
+                using var scope = Selection.FrepSelection.Explicit();
+                doc.Objects.Select(obj.Id);
+            }
         }
         finally
         {

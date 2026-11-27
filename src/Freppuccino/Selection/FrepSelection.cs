@@ -1,3 +1,4 @@
+using Freppuccino.Display;
 using Freppuccino.Csg;
 using Freppuccino.Scene;
 using Freppuccino.Sdf;
@@ -47,6 +48,7 @@ public static class FrepSelection
         {
             var added = e.RhinoObjects.Select(FrepCarriers.NodeOf).OfType<int>().ToList();
             if (added.Count > 0) UiController.SetSelectedNodes(e.Document, UiController.SelectedNodes(e.Document).Concat(added));
+            if (explicitDepth == 0 && FrepDisplaySettings.AnyHidden) DropHidden(e.Document, e.RhinoObjects);
         };
         // Esc at the idle prompt (EscapeKeyPressed only fires during long operations).
         RhinoApp.KeyboardEvent += key =>
@@ -59,6 +61,50 @@ public static class FrepSelection
         {
             if (e.CommandEnglishName == "SelNone" && e.Document is { } doc) ClearNodes(doc);
         };
+    }
+
+    static int explicitDepth;
+
+    /// Overlap-menu hover: drawn as selected, without being selected.
+    public static FrepOperand? PreviewRoot { get; set; }
+    public static FrepInstance? PreviewLeaf { get; set; }
+
+    public static List<FrepOperand> DrawnRoots(RhinoDoc doc) => PreviewRoot is { } r ? [.. Roots(doc), r] : Roots(doc);
+
+    public static List<FrepInstance> DrawnLeaves(RhinoDoc doc) => PreviewLeaf is { } l ? [.. Leaves(doc), l] : Leaves(doc);
+
+    /// Selection made by Freppuccino itself (the tree, a pick): hidden cutters may be selected there, and only there.
+    public static IDisposable Explicit()
+    {
+        explicitDepth++;
+        return new Scope();
+    }
+
+    sealed class Scope : IDisposable
+    {
+        bool done;
+        public void Dispose()
+        {
+            if (done) return;
+            done = true;
+            explicitDepth--;
+        }
+    }
+
+    /// Hidden control shapes swept up by Rhino's own selection (window, crossing, SelAll) while a Freppuccino view is active:
+    /// deselected at once, before anything can act on them.
+    static void DropHidden(RhinoDoc doc, IEnumerable<RhinoObject> objects)
+    {
+        if (doc.Views.ActiveView?.ActiveViewport is not { } vp || !FrepPicker.IsFrepView(vp)) return;
+        var hidden = ControlOutlines.HiddenObjects(doc);
+        bool dropped = false;
+        foreach (var o in objects)
+            if (hidden.Contains(o.Id) && o.IsSelected(false) != 0)
+            {
+                o.Select(false);
+                dropped = true;
+            }
+        if (dropped) doc.Views.Redraw();
     }
 
     static void ClearNodes(RhinoDoc doc)
@@ -129,6 +175,7 @@ public static class FrepSelection
     /// <paramref name="add"/>: keep the current F-rep and Rhino selection; otherwise replace it.
     public static void SelectRoot(RhinoDoc doc, FrepOperand root, bool add)
     {
+        using var scope = Explicit();
         if (!add) ClearAll(doc);
         if (root.IsNode)
         {
@@ -170,6 +217,7 @@ public static class FrepSelection
 
     public static void SelectLeaf(RhinoDoc doc, FrepInstance leaf, bool add)
     {
+        using var scope = Explicit();
         if (!add) ClearAll(doc);
         // A shared leaf picked where its real brep isn't (another root's transform): its own carrier holds the gumball.
         if (FrepCarriers.NeedsInstanceCarrier(doc, leaf) && FrepCarriers.EnsureInstance(doc, leaf) is { } carrier)
@@ -181,6 +229,15 @@ public static class FrepSelection
             doc.Objects.Select(leaf.Object, true, true);
         }
         RefreshGumball();
+        doc.Views.Redraw();
+    }
+
+    /// The entity that holds this leaf's selection: its instance carrier for a secondary instance, else its brep.
+    public static void DeselectLeaf(RhinoDoc doc, FrepInstance leaf)
+    {
+        var carrier = doc.Objects.GetSelectedObjects(false, false).FirstOrDefault(o => FrepCarriers.InstanceOf(doc, o) is { } i && i.SamePath(leaf));
+        doc.Objects.Select(carrier?.Id ?? leaf.Object, false);
+        if (picked.TryGetValue(doc.RuntimeSerialNumber, out var map)) map.Remove(leaf.Object);
         doc.Views.Redraw();
     }
 
