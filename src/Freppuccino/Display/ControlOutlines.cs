@@ -144,7 +144,7 @@ public static class ControlOutlines
                 return;
             }
             if (!byId.TryGetValue(o.NodeId, out var n) || n.Hidden || !(subtracted ? cut.Add(o) : reached.Add(o.NodeId))) return;
-            for (int i = 0; i < n.Operands.Length; i++) Visit(n.Operands[i], subtracted || (n.Op == Csg.FrepOp.Difference && i > 0));
+            for (int i = 0; i < n.Operands.Length; i++) Visit(n.Operands[i], subtracted || (i > 0 && n.ModeAt(i) == Csg.FrepMode.Subtract));
         }
         foreach (var r in roots) Visit(r, false);
         return result;

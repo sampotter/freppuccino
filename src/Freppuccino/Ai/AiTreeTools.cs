@@ -13,7 +13,8 @@ public static partial class AiTools
         var tree = FrepTrees.Get(doc);
         var node = NodeArg(doc, tree, args, "node");
         var operand = Resolve(doc, tree, Str(args, "operand"));
-        var t = Tree(() => tree.AddOperand(node.Id, operand, Index(args)));
+        var mode = args["mode"] is JsonValue ? ParseMode(Str(args, "mode")) : FrepMode.Add;
+        var t = Tree(() => tree.AddOperand(node.Id, operand, Index(args), mode));
         Mutate(doc, $"add to {node.Name}", () => FrepTrees.Set(doc, t, $"AI: add to {node.Name}"));
 
         var result = NodeSummary(doc, t, node.Id);
@@ -45,11 +46,12 @@ public static partial class AiTools
         var item = Resolve(doc, tree, Str(args, "item"));
         var from = args["from"] is JsonValue ? NodeArg(doc, tree, args, "from") : null;
         var to = args["to"] is JsonValue ? NodeArg(doc, tree, args, "to") : null; // absent / null = root
-        var t = Tree(() => tree.Move(item, from?.Id, to?.Id, Index(args)));
+        FrepMode? mode = args["mode"] is JsonValue ? ParseMode(Str(args, "mode")) : null;
+        var t = Tree(() => tree.Move(item, from?.Id, to?.Id, Index(args), mode));
         var name = OperandRef(doc, item, null);
         Mutate(doc, $"move {name}", () => FrepTrees.Set(doc, t, $"AI: move {name}"));
 
-        var touched = tree.Nodes.Where(n => !n.Operands.SequenceEqual(t.Find(n.Id)!.Operands)).Select(n => n.Id).ToList();
+        var touched = tree.Nodes.Where(n => !n.Operands.SequenceEqual(t.Find(n.Id)!.Operands) || !Rows(n).SequenceEqual(Rows(t.Find(n.Id)!))).Select(n => n.Id).ToList();
         var notes = new List<string>();
         foreach (var id in touched) Notes(doc, tree, t, id, notes);
         if (to?.Op.IsWarp() == true && to.Operands.Length == 1 && to.Operands[0] != item && !t.IsReferenced(to.Operands[0]))
@@ -63,6 +65,22 @@ public static partial class AiTools
         if (notes.Count > 0) result["note"] = string.Join("; ", notes);
         return result;
     }
+
+    static JsonNode SetMode(RhinoDoc doc, JsonObject args)
+    {
+        var tree = FrepTrees.Get(doc);
+        var node = NodeArg(doc, tree, args, "node");
+        var operand = Resolve(doc, tree, Str(args, "operand"));
+        var mode = ParseMode(Str(args, "mode"));
+        var t = Tree(() => tree.WithModes([(node.Id, operand, mode)]));
+        Mutate(doc, $"mode in {node.Name}", () => FrepTrees.Set(doc, t, $"AI: mode in {node.Name}"));
+        var result = NodeSummary(doc, t, node.Id);
+        if (node.Operands.IndexOf(operand) == 0)
+            result["note"] = $"{OperandRef(doc, operand, null)} is the base (operands[0]) of {node.Name}: its mode is kept but only applies once another operand is moved above it";
+        return result;
+    }
+
+    static IEnumerable<FrepMode> Rows(FrepNode n) => Enumerable.Range(0, n.Operands.Length).Select(n.ModeAt);
 
     // ───────────────────────── helpers ─────────────────────────
 
@@ -94,6 +112,7 @@ public static partial class AiTools
             ["ref"] = n.Name,
             ["op"] = OpName(n.Op),
             ["operands"] = new JsonArray([.. n.Operands.Select(o => (JsonNode)OperandRef(doc, o, refs))]),
+            ["modes"] = n.IsGroup ? ModeNames(n) : null,
         };
     }
 
@@ -104,7 +123,7 @@ public static partial class AiTools
         if (a.Op.IsWarp()) return;
         if (a.Operands.Length == 1 && b.Operands.Length > 1)
             notes.Add($"{a.Name} has one operand left, so it just passes it through");
-        if (a.Op == FrepOp.Difference && b.Operands.Length > 0 && a.Operands[0] != b.Operands[0])
-            notes.Add($"{a.Name}'s subtract target (operands[0]) is now {OperandRef(doc, a.Operands[0], null)}");
+        if (a.IsGroup && b.Operands.Length > 0 && a.Operands.Length > 0 && a.Operands[0] != b.Operands[0])
+            notes.Add($"{a.Name}'s base (operands[0]) is now {OperandRef(doc, a.Operands[0], null)}; every later operand applies its mode to the result so far");
     }
 }

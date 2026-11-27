@@ -48,8 +48,10 @@ public class FreppuccinoPlugin : PlugIn
 
     protected override void WriteDocument(RhinoDoc doc, BinaryArchiveWriter archive, FileWriteOptions options)
     {
-        FrepTrees.Get(doc).Write(archive);
+        var tree = FrepTrees.Get(doc);
+        tree.Write(archive);
         ShaderCache.Write(archive, StoredShader(options));
+        tree.WriteModes(archive);
     }
 
     static string? StoredShader(FileWriteOptions options) =>
@@ -63,9 +65,13 @@ public class FreppuccinoPlugin : PlugIn
             return;
         }
         var tree = FrepTree.Read(archive, out var minor);
+        bool cacheRead = minor < 4;
         if (minor >= 4)
-            try { ShaderCache.Read(archive); }
+            try { ShaderCache.Read(archive); cacheRead = true; }
             catch (Exception ex) { RhinoApp.WriteLine($"Freppuccino: the shader saved in this file could not be read ({ex.Message}); it will be compiled."); }
+        if (minor >= 5)
+            try { tree = cacheRead ? tree.ReadModes(archive) : throw new InvalidDataException("unreadable shader cache before them"); }
+            catch (Exception ex) { RhinoApp.WriteLine($"Freppuccino: the add/subtract/intersect modes in this file could not be read ({ex.Message}); groups open with their closest preset."); }
         FrepTrees.Apply(doc, tree);
     }
 

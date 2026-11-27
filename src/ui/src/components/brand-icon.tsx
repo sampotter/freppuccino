@@ -9,7 +9,7 @@ const icons = Object.fromEntries(Object.entries(svgs).map(([path, svg]) => [path
 
 export type BrandIconName =
   | 'box' | 'sphere' | 'cylinder' | 'cone' | 'pyramid' | 'ellipsoid' | 'torus' | 'function'
-  | 'union' | 'subtract' | 'intersect' | 'blend' | 'offset' | 'preview'
+  | 'union' | 'subtract' | 'intersect' | 'group' | 'blend' | 'offset' | 'preview'
   | 'twist' | 'bend' | 'repeat'
 
 /** 24px artwork; size it with className (size-4 / size-6 ...). Colour = ink. */

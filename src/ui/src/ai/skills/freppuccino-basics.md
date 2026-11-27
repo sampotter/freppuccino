@@ -25,9 +25,9 @@ always: true
 - set_color recolors existing primitives without touching their shape: refs + color for one color, or
   colors: [{ref, color}, ...] to paint many parts in one call (one undo step). A node ref paints every primitive under it.
 - update_primitive also takes color, but use set_color for color-only changes, especially several parts at once.
-- How colors combine: union / intersect fade between the operands' colors across the blend (k); subtract keeps the
-  target's color on the cut faces (the cutter's color never shows); deforms keep the child's colors.
-  So to color a cut surface (a cup's inside), color the target, or union a thin colored part inside it.
+- How colors combine: add / intersect rows fade between the colors across the blend (k); a subtract row keeps the
+  color of the result so far on the cut faces (the cutter's color never shows); deforms keep the child's colors.
+  So to color a cut surface (a cup's inside), color the base, or add a thin colored part inside it.
 - get_scene lists every primitive's color.
 
 ## Deforms (deform tool)
@@ -35,27 +35,33 @@ always: true
   patterns of identical features (studs, pickets, holes). Load the deformations skill before using them.
 - Repeat beats creating many identical primitives: it is one primitive in the shader budget, and edits apply to every copy.
 
-## CSG (combine)
+## CSG (combine, groups)
 - Roots (anything not used by an operation) are all drawn, merged with a sharp union.
-- combine consumes its operands: they stop being roots. Build bottom-up: small sub-assemblies first (e.g. the handle),
-  then combine those nodes. Don't put the same operand into two operations.
-- subtract: operands[0] is the target; every other operand is cut away from it.
+- combine makes a group and consumes its operands: they stop being roots. Build bottom-up: small sub-assemblies first
+  (e.g. the handle), then combine those nodes. Don't put the same operand into two groups.
+- A group reads top to bottom like a feature history: operands[0] is the base, then each later operand adds to,
+  subtracts from or intersects with the result so far (its mode, listed in get_scene "modes"). combine's op only picks
+  the starting modes (subtract: everything after operands[0] cuts). set_mode changes one operand; one group can mix
+  all three, e.g. [shell, +flange, -bore, ∩envelope], instead of nesting a union inside a subtract.
+- A hidden or missing operand is skipped. If the base is hidden, the group starts at the next add row; subtract and
+  intersect rows before any add have nothing to act on.
 - Editing a primitive (update_primitive / transform) updates every operation above it. Prefer editing over deleting.
-- Restructure in place: add_operand / remove_operand change an existing node's operands; move re-parents a primitive
-  or node (to another node, or to the root with no "to"). A node keeps ≥ 1 operand; a deform exactly 1 (move into it
-  to swap its target). Node refs (N#) never change.
-- Order matters for cavities: union the outside parts first, THEN subtract the cavity, so the cut also clears any part
-  that pokes into it (e.g. the inner half of a handle torus).
+- Restructure in place: add_operand / remove_operand change an existing group's operands (add_operand takes a mode);
+  move re-parents or reorders a primitive or node (to another node, or to the root with no "to"); reordering a group
+  changes its shape. A node keeps ≥ 1 operand; a deform exactly 1 (move into it to swap its target). Node refs (N#)
+  never change.
+- Order matters for cavities: add the outside parts first, THEN the subtract row for the cavity, so the cut also clears
+  any part that pokes into it (e.g. the inner half of a handle torus).
 
 ## Blending (k)
 - k is a blend radius in model units. 0 = sharp crease. > 0 = smooth, fillet-like transition of roughly that size.
-- Union with k adds material in the joint (a fillet). Subtract with k rounds the cut edge. Intersect with k rounds the
-  edges of the overlap.
+- An add row with k adds material in the joint (a fillet). A subtract row with k rounds the cut edge. An intersect row
+  with k rounds the edges of the overlap. One k per group, for every join in it.
 - Pick k relative to the smaller feature: ~5-15% of its size for organic joins, 0 to 2% for crisp mechanical parts.
   Too big makes everything blobby and swallows small parts. Too small leaves a visible crease.
 - Parts closer than k get pulled together even if they don't touch. To keep small details (eyes, buttons) crisp,
   combine them in a separate operation with a small k.
-- A blend only acts between the operands of that one operation.
+- A blend only acts between the operands of that one group.
 
 ## Practical rules
 - Unioned parts should overlap a little (or use k > 0). Exactly touching surfaces render as a seam.
@@ -69,7 +75,7 @@ always: true
 - FFunctions (create_function): your own SDF code in a box, for what primitives can't do: lattices, gyroids / TPMS,
   foams, minimal surfaces, ribs, textures. Load freppuccino-ffunction (and lattices for lattice work); start from
   get_function_example. They combine, deform and color like any primitive.
-- wrap op=offset on a union / subtract / intersect node shifts its whole surface (negative = thinner); wrap op=blend
+- wrap op=offset on a group node shifts its whole surface (negative = thinner); wrap op=blend
   on a repeat node fillets its copies together. unwrap removes a node and keeps its children.
 - The user's selection is in get_scene ("selection"). End by selecting the finished part (select) so they can tweak it.
 - mesh bakes roots into a Rhino mesh, only when asked. set_zebra checks blend smoothness in captures.

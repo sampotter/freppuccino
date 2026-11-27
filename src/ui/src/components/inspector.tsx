@@ -4,12 +4,13 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { BrandIcon, NodeIcon, type BrandIconName } from '@/components/brand-icon'
+import { BlendHint } from '@/components/blend-hint'
 import { ParamSlider } from '@/components/param-slider'
 import { ColorField } from '@/components/color-field'
 import { CodeView } from '@/components/code-view'
 import { send, useHost } from '@/bridge/host'
 import type { AllowedCommand, DeformKind, Id, OperationKind, SceneNode } from '@/bridge/protocol'
-import { DEFORMS, OPERATIONS, displayParams, isDeform, typeLabel } from '@/lib/scene'
+import { DEFORMS, MODES, OPERATIONS, displayParams, isDeform, typeLabel } from '@/lib/scene'
 
 /** Bottom half of the panel; what it shows depends on the selection (pick order). */
 export function Inspector(props: {
@@ -38,7 +39,7 @@ export function Inspector(props: {
         )}
         <DeformButtons
           repeatId={one.op === 'repeat' ? one.id : undefined}
-          offsetId={one.op === 'union' || one.op === 'subtract' || one.op === 'intersect' ? one.id : undefined}
+          offsetId={one.op === 'group' ? one.id : undefined}
         />
       </>
     )
@@ -47,7 +48,7 @@ export function Inspector(props: {
   return (
     <Section title="Combine">
       <p className="type-small text-muted-foreground">
-        Select two or more top-level nodes. Subtract takes exactly two.
+        Select two or more top-level nodes.
       </p>
     </Section>
   )
@@ -237,30 +238,28 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
   const { labels, existing } = props
   const units = useHost((s) => s.settings.units)
   const [swapped, setSwapped] = useState(false)
-  const existingOp = existing?.op === 'union' || existing?.op === 'subtract' || existing?.op === 'intersect' ? existing.op : undefined
-  const [op, setOp] = useState<OperationKind>(existingOp ?? 'union')
+  const [op, setOp] = useState<OperationKind>('union')
   const [k, setK] = useState(existing?.k ?? 5)
 
   // Host values win when they change (undo, another edit); unrelated scene updates keep local edits.
   // Not mid-drag, and not until the host has caught up with our last edit (stale echoes would yank the slider back).
   const [dragging, setDragging] = useState(false)
-  const [pending, setPending] = useState<{ op: OperationKind; k: number } | null>(null)
-  const [synced, setSynced] = useState({ op: existing?.op, k: existing?.k })
-  const caughtUp = !pending || (existing?.op === pending.op && existing?.k === pending.k)
-  if (existing && !dragging && caughtUp && (pending || existing.op !== synced.op || existing.k !== synced.k)) {
+  const [pending, setPending] = useState<{ k: number } | null>(null)
+  const [synced, setSynced] = useState({ k: existing?.k })
+  const caughtUp = !pending || existing?.k === pending.k
+  if (existing && !dragging && caughtUp && (pending || existing.k !== synced.k)) {
     setPending(null)
-    setSynced({ op: existing.op, k: existing.k })
-    if (existingOp) setOp(existingOp)
+    setSynced({ k: existing.k })
     if (existing.k !== undefined) setK(existing.k)
   }
 
-  // Live edits of an existing node. Blend previews are throttled; release sends the final value (= one undo step).
-  const live = useRef({ timer: 0, k: 0, sent: null as { op: OperationKind; k: number } | null, previewed: false })
-  const edit = (next: { op: OperationKind; k: number }, preview: boolean) => {
+  // Live edits of an existing group's blend. Previews are throttled; release sends the final value (= one undo step).
+  const live = useRef({ timer: 0, k: 0, sent: null as { op: 'group'; k: number } | null, previewed: false })
+  const edit = (next: { k: number }, preview: boolean) => {
     if (!existing) return
-    live.current.sent = next
+    live.current.sent = { op: 'group', ...next }
     setPending(next)
-    send({ type: 'setOperation', id: existing.id, ...next, preview })
+    send({ type: 'setOperation', id: existing.id, op: 'group', ...next, preview })
   }
   const previewK = (v: number) => {
     const l = live.current
@@ -270,7 +269,7 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
       l.timer = 0
       if (l.k === (l.previewed ? l.sent?.k : existing?.k)) return
       l.previewed = true
-      edit({ op, k: l.k }, true)
+      edit({ k: l.k }, true)
     }, PREVIEW_MS)
   }
   const commitK = (v: number) => {
@@ -280,7 +279,7 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
     setK(v)
     setDragging(false)
     // Final message closes the host's gesture, so send it even if the drag ended where it started.
-    if (l.previewed || v !== existing?.k) edit({ op, k: v }, false)
+    if (l.previewed || v !== existing?.k) edit({ k: v }, false)
     l.previewed = false
   }
   // Unmounted mid-drag (selection changed): close the gesture.
@@ -293,18 +292,18 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
     }
   }, [id])
 
-  // Swapping only makes sense for two new operands; otherwise pick order decides the subtract target.
+  // Swapping only makes sense for two new operands; otherwise pick order decides the base.
   const canSwap = !existing && props.operands.length === 2
   const operands = canSwap && swapped ? [...props.operands].reverse() : props.operands
-  const subtractOk = operands.length === 2
-  const ordered = op === 'subtract'
-  const role = (i: number) => (ordered ? (i === 0 ? 'Target' : 'Tool') : `#${i + 1}`)
+  const role = (i: number) =>
+    existing ? (i === 0 ? 'Base' : MODES[existing.modes?.[i] ?? 'add'].label)
+    : op === 'subtract' ? (i === 0 ? 'Base' : 'Subtract') : `#${i + 1}`
 
   return (
     <Section
-      title={existing ? (labels.get(existing.id) ?? 'Operation') : 'Combine'}
-      badge={existing ? 'Operation' : `${operands.length} operands`}
-      icon={<BrandIcon name={OPERATIONS[op].icon} className="size-6" />}
+      title={existing ? (labels.get(existing.id) ?? 'Group') : 'Combine'}
+      badge={existing ? 'Group' : `${operands.length} operands`}
+      icon={existing ? <NodeIcon node={existing} className="size-6" /> : <BrandIcon name={OPERATIONS[op].icon} className="size-6" />}
     >
       <div className="flex items-center gap-1">
         <div className="grid min-w-0 flex-1 gap-1">
@@ -319,34 +318,28 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
         )}
       </div>
 
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        spacing={0}
-        value={op}
-        onValueChange={(v) => {
-          if (!v || v === op || (v === 'subtract' && !subtractOk)) return
-          setOp(v as OperationKind)
-          edit({ op: v as OperationKind, k }, false)
-        }}
-        className="w-full"
-      >
-        {(Object.keys(OPERATIONS) as OperationKind[]).map((kind) => (
-          <ToggleGroupItem
-            key={kind}
-            value={kind}
-            disabled={kind === 'subtract' && !subtractOk}
-            title={kind === 'subtract' && !subtractOk ? 'Subtract takes exactly two nodes' : undefined}
-            className="flex-1 px-1"
-            aria-label={OPERATIONS[kind].label}
-          >
-            <BrandIcon name={OPERATIONS[kind].icon} /> {OPERATIONS[kind].label}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
+      {!existing && (
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          spacing={0}
+          value={op}
+          onValueChange={(v) => {
+            if (v) setOp(v as OperationKind)
+          }}
+          className="w-full"
+        >
+          {(Object.keys(OPERATIONS) as OperationKind[]).map((kind) => (
+            <ToggleGroupItem key={kind} value={kind} className="flex-1 px-1" aria-label={OPERATIONS[kind].label}>
+              <BrandIcon name={OPERATIONS[kind].icon} /> {OPERATIONS[kind].label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      )}
 
       <ParamSlider
         label="Blend radius"
+        wrapInput={(input) => <BlendHint op="group" units={units}>{input}</BlendHint>}
         units={k === 0 ? 'sharp' : units}
         value={k}
         max={20}
@@ -485,6 +478,7 @@ function BlendSlider(props: { id: Id; k: number }) {
   return (
     <ParamSlider
       label="Blend radius"
+      wrapInput={(input) => <BlendHint op="blend" units={units}>{input}</BlendHint>}
       units={k === 0 ? 'sharp' : units}
       value={k}
       max={20}

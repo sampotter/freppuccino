@@ -1,5 +1,5 @@
 import type { Transport } from './host'
-import type { AllowedCommand, HostMessage, SceneNode, UiMessage, UserFnInfo } from './protocol'
+import type { AllowedCommand, HostMessage, OperationKind, RowMode, SceneNode, UiMessage, UserFnInfo } from './protocol'
 
 /**
  * Stand-in for Rhino when the page runs in a normal browser (`npm run dev`).
@@ -15,6 +15,10 @@ export function createMockHost(): Transport {
   let nextNode = 1
   const opNode = (op: SceneNode['op'], k: number, children: SceneNode[]): SceneNode => ({
     id: `N${nextNode++}`, kind: 'operation', name: `N${nextNode - 1}`, op, k, visible: true, locked: false, children,
+  })
+  const group = (preset: OperationKind, k: number, children: SceneNode[]): SceneNode => ({
+    ...opNode('group', k, children),
+    modes: children.map((_, i): RowMode => (preset === 'intersect' ? 'intersect' : preset === 'subtract' && i > 0 ? 'subtract' : 'add')),
   })
   const prim = (sdfType: string, params: Record<string, number>, name?: string): SceneNode => ({
     id: id(), kind: 'primitive', sdfType, name, visible: true, locked: false, params, color: '#FCFCFC',
@@ -35,7 +39,7 @@ export function createMockHost(): Transport {
     FTorus: () => prim('sdTorus', { 't.x': 2, 't.y': 0.5 }),
   }
 
-  const holes = opNode('union', 0.5, [
+  const holes = group('union', 0.5, [
     prim('sdCappedCylinder', { h: 2, r: 0.8 }, 'Bore'),
     prim('sdEllipsoid', { 'r.x': 1.5, 'r.y': 0.6, 'r.z': 0.6 }),
   ])
@@ -43,7 +47,7 @@ export function createMockHost(): Transport {
     prim('sdSphere', { s: 2 }),
     prim('sdTorus', { 't.x': 3, 't.y': 0.6 }),
     prim('sdCappedCone', { h: 1.5, r1: 1.2, r2: 0.3 }),
-    opNode('subtract', 0.25, [prim('sdBox', { 'b.x': 3, 'b.y': 3, 'b.z': 1 }), holes]),
+    group('subtract', 0.25, [prim('sdBox', { 'b.x': 3, 'b.y': 3, 'b.z': 1 }), holes]),
     prim('sdPyramid', { h: 2, s: 2.5 }),
     { ...prim('sdCappedCylinder', { h: 1, r: 0.5 }), custom: true },
     { ...opNode('repeat', 0, [prim('sdSphere', { s: 1 })]), params: { x: 3, y: 3, z: 0 } },
@@ -75,7 +79,7 @@ export function createMockHost(): Transport {
       }
       const children = collapse(n.children)
       if (children.length === 0) continue
-      const combine = n.op === 'union' || n.op === 'subtract' || n.op === 'intersect'
+      const combine = n.op === 'group'
       if (combine && children.length === 1) {
         out.push(children[0])
         continue
@@ -141,7 +145,7 @@ export function createMockHost(): Transport {
       case 'offsetNode': {
         let created: string | null = null
         scene = map(scene, (x) => {
-          if (x.id !== m.id || (x.op !== 'union' && x.op !== 'subtract' && x.op !== 'intersect')) return x
+          if (x.id !== m.id || x.op !== 'group') return x
           const offset = opNode('offset', 0, [x])
           created = offset.id
           return offset
@@ -169,17 +173,11 @@ export function createMockHost(): Transport {
         const rootIds = new Set(scene.map((x) => x.id))
         const operands = m.operands.map((x) => all.find((y) => y.id === x)).filter((x) => !!x)
         const topLevel = operands.length >= 2 && operands.every((o) => rootIds.has(o.id))
-        if (!topLevel || (m.op === 'subtract' && operands.length !== 2)) {
-          emit({
-            type: 'notice',
-            level: 'warning',
-            text: m.op === 'subtract'
-              ? 'Subtract takes exactly two top-level nodes.'
-              : 'Select two or more top-level nodes.',
-          })
+        if (!topLevel) {
+          emit({ type: 'notice', level: 'warning', text: 'Select two or more top-level nodes.' })
           break
         }
-        const node = opNode(m.op, m.k, operands)
+        const node = group(m.op, m.k, operands)
         scene = [...scene.filter((x) => !m.operands.includes(x.id)), node]
         selection = [node.id]
         emit({ type: 'scene', scene })
@@ -189,8 +187,17 @@ export function createMockHost(): Transport {
       case 'setOperation':
         scene = map(scene, (x) => {
           if (x.id !== m.id) return x
-          if (m.op === 'subtract' && x.op !== 'subtract' && (x.children?.length ?? 0) !== 2) return x
-          return { ...x, op: m.op, k: m.k }
+          if (x.op === 'group' && m.op !== 'group' && m.op !== 'blend' && m.op !== 'offset')
+            return { ...x, k: m.k, modes: group(m.op, m.k, x.children ?? []).modes }
+          return { ...x, k: m.k }
+        })
+        emit({ type: 'scene', scene })
+        break
+      case 'setModes':
+        scene = map(scene, (x) => {
+          const rows = m.rows.filter((r) => r.parent === x.id)
+          if (!rows.length || x.op !== 'group') return x
+          return { ...x, modes: (x.children ?? []).map((c, i) => rows.find((r) => r.child === c.id)?.mode ?? x.modes?.[i] ?? 'add') }
         })
         emit({ type: 'scene', scene })
         break
@@ -214,16 +221,22 @@ export function createMockHost(): Transport {
           emit({ type: 'notice', level: 'warning', text: `${m.to} can't go inside itself.` })
           break
         }
+        const source = m.from === null ? null : flat(scene).find((x) => x.id === m.from)
+        const carried: RowMode = source?.modes?.[source.children?.findIndex((c) => c.id === m.id) ?? -1] ?? 'add'
         const detached = m.from === null
           ? scene.filter((x) => x.id !== m.id)
-          : map(scene, (x) => (x.id === m.from ? { ...x, children: x.children?.filter((c) => c.id !== m.id) } : x))
+          : map(scene, (x) => (x.id === m.from
+              ? { ...x, children: x.children?.filter((c) => c.id !== m.id), modes: x.modes?.filter((_, i) => x.children?.[i]?.id !== m.id) }
+              : x))
         scene = m.to === null
           ? [...detached, item]
           : map(detached, (x) => {
               if (x.id !== m.to) return x
               const children = [...(x.children ?? [])]
+              const modes = [...(x.modes ?? children.map((): RowMode => 'add'))]
               children.splice(m.index ?? children.length, 0, item)
-              return { ...x, children }
+              modes.splice(m.index ?? modes.length, 0, carried)
+              return { ...x, children, modes }
             })
         emit({ type: 'scene', scene })
         break
@@ -394,7 +407,7 @@ export function createMockHost(): Transport {
       case 'wrap': {
         const target = find(String(args.target))
         const op = String(args.op)
-        if (op === 'offset' && !['union', 'subtract', 'intersect'].includes(String(target.op))) throw new Error('offset wraps a union / subtract / intersect node')
+        if (op === 'offset' && target.op !== 'group') throw new Error('offset wraps a group node')
         if (op === 'blend' && target.op !== 'repeat') throw new Error('blend wraps a repeat node')
         const node = opNode(op as SceneNode['op'], Number(args.k ?? 0), [target])
         scene = [...scene.filter((x) => x !== target), node]

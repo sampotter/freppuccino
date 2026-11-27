@@ -11,11 +11,33 @@ namespace Freppuccino.Csg;
 /// Offset: one child, a union, intersection, or difference; K moves its surface out (positive) or in.
 /// Twist/Bend/Repeat: domain warps of one operand, shaped by a referenced Rhino object
 /// (<see cref="FrepNode.Ref"/>: line for Twist/Bend, box for Repeat) + <see cref="FrepNode.Params"/>.
-public enum FrepOp { Union = 0, Intersect = 1, Difference = 2, Twist = 3, Bend = 4, Repeat = 5, Blend = 6, Offset = 7 }
+public enum FrepOp { Union = 0, Intersect = 1, Difference = 2, Twist = 3, Bend = 4, Repeat = 5, Blend = 6, Offset = 7, Group = 8 }
+
+public enum FrepMode { Add = 0, Subtract = 1, Intersect = 2 }
 
 public static class FrepOps
 {
     public static bool IsWarp(this FrepOp op) => op is FrepOp.Twist or FrepOp.Bend or FrepOp.Repeat;
+
+    public static bool IsPreset(this FrepOp op) => op is FrepOp.Union or FrepOp.Intersect or FrepOp.Difference;
+
+    public static FrepMode PresetMode(FrepOp op, int row) => op switch
+    {
+        FrepOp.Intersect => FrepMode.Intersect,
+        FrepOp.Difference when row > 0 => FrepMode.Subtract,
+        _ => FrepMode.Add,
+    };
+
+    public static ImmutableArray<FrepMode> PresetModes(FrepOp op, int count) => [.. Enumerable.Range(0, count).Select(i => PresetMode(op, i))];
+
+    public static FrepOp? PresetOf(ImmutableArray<FrepMode> modes, int count)
+    {
+        foreach (var op in new[] { FrepOp.Union, FrepOp.Difference, FrepOp.Intersect })
+            if (Enumerable.Range(1, Math.Max(0, count - 1)).All(i => Mode(modes, i) == PresetMode(op, i))) return op;
+        return null;
+    }
+
+    static FrepMode Mode(ImmutableArray<FrepMode> modes, int i) => !modes.IsDefault && i < modes.Length ? modes[i] : FrepMode.Add;
 
     /// Param names per warp op (index = slot in FrepNode.Params). Angles in degrees.
     ///   Twist  angle: total twist from line start to end (linear, continues past the ends)
@@ -47,9 +69,24 @@ public readonly record struct FrepOperand(int NodeId, Guid ObjectId)
 /// default = identity): field = result(M⁻¹ p) · s(M), s = smallest singular value. A root's gumball transform composes
 /// into it ("transform the blend as one object"); it stays with the node if the node later becomes an operand.
 public sealed record FrepNode(int Id, FrepOp Op, double K, ImmutableArray<FrepOperand> Operands, bool Hidden = false,
-    Guid Ref = default, ImmutableArray<double> Params = default, ImmutableArray<double> Matrix = default)
+    Guid Ref = default, ImmutableArray<double> Params = default, ImmutableArray<double> Matrix = default,
+    ImmutableArray<FrepMode> Modes = default)
 {
     public string Name => FrepTree.NodeName(Id);
+
+    public bool IsGroup => Op == FrepOp.Group;
+
+    public FrepMode ModeAt(int i) => IsGroup && !Modes.IsDefault && i < Modes.Length ? Modes[i] : FrepMode.Add;
+
+    public FrepMode? ModeOf(FrepOperand o) => Operands.IndexOf(o) is var i and >= 0 ? ModeAt(i) : null;
+
+    public FrepNode WithRows(ImmutableArray<FrepOperand> operands, ImmutableArray<FrepMode> modes) =>
+        this with { Operands = operands, Modes = IsGroup ? modes : default };
+
+    public FrepNode Rekeyed(ImmutableArray<FrepOperand> operands, FrepOperand? moved = null, FrepMode movedMode = FrepMode.Add) =>
+        WithRows(operands, [.. operands.Select(o => o == moved ? movedMode : ModeOf(o) ?? FrepMode.Add)]);
+
+    public FrepNode WithoutRowAt(int i) => WithRows(Operands.RemoveAt(i), IsGroup ? [.. Enumerable.Range(0, Operands.Length).Where(j => j != i).Select(ModeAt)] : default);
     public double Param(int i) => !Params.IsDefault && i < Params.Length ? Params[i] : 0;
 
     public bool HasMatrix => !Matrix.IsDefault && Matrix.Length == 12;
@@ -98,9 +135,12 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
 
     public bool IsReferenced(FrepOperand o) => Nodes.Any(n => n.Operands.Contains(o));
 
-    public (FrepTree Tree, FrepNode Node) Add(FrepOp op, double k, IEnumerable<FrepOperand> operands)
+    public (FrepTree Tree, FrepNode Node) Add(FrepOp op, double k, IEnumerable<FrepOperand> operands, IEnumerable<FrepMode>? modes = null)
     {
-        var node = new FrepNode(NextId, op, k, [.. operands]);
+        ImmutableArray<FrepOperand> ops = [.. operands];
+        var node = op.IsPreset() || op == FrepOp.Group
+            ? new FrepNode(NextId, FrepOp.Group, k, ops, Modes: modes != null ? [.. modes] : FrepOps.PresetModes(op, ops.Length))
+            : new FrepNode(NextId, op, k, ops);
         return (new FrepTree(Nodes.Add(node), NextId + 1), node);
     }
 
@@ -135,7 +175,23 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
 
     public FrepTree WithK(int id, double k) => Edit(id, n => n with { K = k });
 
-    public FrepTree WithOp(int id, FrepOp op, double k) => Edit(id, n => n with { Op = op, K = k });
+    public FrepTree WithOp(int id, FrepOp op, double k) => Edit(id, n => op.IsPreset() && n.IsGroup
+        ? n with { K = k, Modes = FrepOps.PresetModes(op, n.Operands.Length) }
+        : n with { Op = op, K = k });
+
+    public FrepTree WithModes(IEnumerable<(int NodeId, FrepOperand Operand, FrepMode Mode)> rows)
+    {
+        var t = this;
+        foreach (var (id, o, m) in rows)
+        {
+            var n = Get(id);
+            if (!n.IsGroup) throw new ArgumentException($"{n.Name} is not a group");
+            int i = n.Operands.IndexOf(o);
+            if (i < 0) throw new ArgumentException($"{Describe(o)} is not an operand of {n.Name}");
+            t = t.Edit(id, x => x.WithRows(x.Operands, [.. Enumerable.Range(0, x.Operands.Length).Select(j => j == i ? m : x.ModeAt(j))]));
+        }
+        return t;
+    }
 
     public FrepTree WithHidden(int id, bool hidden) => Edit(id, n => n with { Hidden = hidden });
 
@@ -158,14 +214,16 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
     {
         var node = Get(nodeId);
         Check(node, operands);
-        return Edit(nodeId, n => n with { Operands = operands }).Sorted();
+        return Edit(nodeId, n => n.Rekeyed(operands)).Sorted();
     }
 
     /// Inserts at index (default: end).
-    public FrepTree AddOperand(int nodeId, FrepOperand operand, int? index = null)
+    public FrepTree AddOperand(int nodeId, FrepOperand operand, int? index = null, FrepMode mode = FrepMode.Add)
     {
         var node = Get(nodeId);
-        return WithOperands(nodeId, Insert(node, node.Operands, operand, index));
+        var operands = Insert(node, node.Operands, operand, index);
+        Check(node, operands);
+        return Edit(nodeId, n => n.Rekeyed(operands, operand, mode)).Sorted();
     }
 
     public FrepTree RemoveOperand(int nodeId, FrepOperand operand)
@@ -179,7 +237,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
     /// <paramref name="toNodeId"/> at <paramref name="index"/> (into the list after detaching; default end).
     /// toNodeId null = root (detach only). from == to reorders. Into a warp: replaces its child (index null or 0); the
     /// old child is dropped from it. All-or-nothing: every touched node is validated before anything changes.
-    public FrepTree Move(FrepOperand operand, int? fromNodeId, int? toNodeId, int? index = null)
+    public FrepTree Move(FrepOperand operand, int? fromNodeId, int? toNodeId, int? index = null, FrepMode? mode = null)
     {
         if (operand.IsNode) Get(operand.NodeId);
         var target = toNodeId is { } tid ? Get(tid) : null;
@@ -194,6 +252,8 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         else parents = [.. Nodes.Where(n => n.Operands.Contains(operand))];
         if (target == null && parents.Count == 0) throw new ArgumentException($"{Describe(operand)} is already a root");
 
+        var detached = parents.Select(p => p.ModeOf(operand) ?? FrepMode.Add).Distinct().ToList();
+        var carried = mode ?? (detached.Count == 1 ? detached[0] : FrepMode.Add);
         var lists = parents.ToDictionary(p => p.Id, p => p.Operands.Remove(operand));
         if (target != null)
         {
@@ -207,7 +267,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
 
         foreach (var (id, ops) in lists) Check(Get(id), ops);
         var t = this;
-        foreach (var (id, ops) in lists) t = t.Edit(id, n => n with { Operands = ops });
+        foreach (var (id, ops) in lists) t = t.Edit(id, n => n.Rekeyed(ops, operand, carried));
         return t.Sorted();
     }
 
@@ -216,6 +276,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         var from = Get(fromNodeId);
         if (from.Op.IsWarp() || from.Operands.Length != 1 || from.Operands[0] != operand || toNodeId == fromNodeId)
             return Move(operand, fromNodeId, toNodeId, index);
+        var carried = from.ModeAt(0);
         var nodes = Nodes;
         var gone = new Queue<int>([fromNodeId]);
         while (gone.TryDequeue(out var id))
@@ -228,7 +289,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
                 int at = n.Operands.IndexOf(self);
                 if (at < 0) continue;
                 if (n.Id == toNodeId && index is { } x && at < x) index = x - 1;
-                n = n with { Operands = n.Operands.RemoveAt(at) };
+                n = n.WithoutRowAt(at);
                 nodes = nodes.SetItem(i, n);
                 if (n.Operands.Length > 0 || n.Id == toNodeId) continue;
                 if (n.Op.IsWarp()) throw new ArgumentException($"{n.Name} is a {n.Op} warp and would lose its only operand");
@@ -238,7 +299,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         var t = this with { Nodes = nodes };
         if (toNodeId is not { } tid) return t;
         if (t.Find(tid) == null) throw new ArgumentException($"{NodeName(tid)} would be left empty and removed");
-        return t.AddOperand(tid, operand, index);
+        return t.AddOperand(tid, operand, index, carried);
     }
 
     /// True if node <paramref name="id"/> is (transitively) under node <paramref name="ancestorId"/>.
@@ -335,19 +396,19 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
     /// a node left with none is removed. Twist, bend, repeat, and blend keep their one child.
     public FrepTree Excise(IReadOnlySet<int> dropNodes, IReadOnlySet<Guid> dropObjects)
     {
-        List<FrepOperand> Expand(FrepOperand o, HashSet<int> stack)
+        List<(FrepOperand O, FrepMode M)> Expand(FrepOperand o, FrepMode m, HashSet<int> stack)
         {
             if (!o.IsNode)
-                return dropObjects.Contains(o.ObjectId) ? [] : [o];
+                return dropObjects.Contains(o.ObjectId) ? [] : [(o, m)];
             if (!dropNodes.Contains(o.NodeId))
-                return [o];
+                return [(o, m)];
             if (!stack.Add(o.NodeId))
                 return [];
             var found = Find(o.NodeId);
-            var acc = new List<FrepOperand>();
+            var acc = new List<(FrepOperand, FrepMode)>();
             if (found != null)
-                foreach (var c in found.Operands)
-                    acc.AddRange(Expand(c, stack));
+                for (int i = 0; i < found.Operands.Length; i++)
+                    acc.AddRange(Expand(found.Operands[i], acc.Count == 0 ? m : found.ModeAt(i), stack));
             stack.Remove(o.NodeId);
             return acc;
         }
@@ -357,14 +418,14 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         foreach (var n in Nodes)
         {
             if (dropNodes.Contains(n.Id)) { changed = true; continue; }
-            var ops = new List<FrepOperand>();
-            foreach (var o in n.Operands)
-                ops.AddRange(Expand(o, []));
-            if (ops.Count == n.Operands.Length && ops.SequenceEqual(n.Operands))
+            var rows = new List<(FrepOperand O, FrepMode M)>();
+            for (int i = 0; i < n.Operands.Length; i++)
+                rows.AddRange(Expand(n.Operands[i], n.ModeAt(i), []));
+            if (rows.Count == n.Operands.Length && rows.Select(r => r.O).SequenceEqual(n.Operands) && rows.Select(r => r.M).SequenceEqual(Enumerable.Range(0, rows.Count).Select(n.ModeAt)))
                 kept.Add(n);
             else
             {
-                kept.Add(n with { Operands = [.. ops] });
+                kept.Add(n.WithRows([.. rows.Select(r => r.O)], [.. rows.Select(r => r.M)]));
                 changed = true;
             }
         }
@@ -380,7 +441,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         {
             // A one-operand node with a transform M is kept: folding it into its operand would drop M.
             int i = nodes.FindIndex(n => n.Operands.Length == 0
-                || (n.Operands.Length == 1 && !n.HasMatrix && n.Op is FrepOp.Union or FrepOp.Intersect or FrepOp.Difference));
+                || (n.Operands.Length == 1 && !n.HasMatrix && n.IsGroup));
             if (i < 0) break;
             var gone = nodes[i];
             FrepOperand? only = gone.Operands.Length == 1 ? gone.Operands[0] : null;
@@ -393,18 +454,22 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
     {
         if (!n.Operands.Any(o => o.IsNode && o.NodeId == goneId)) return n;
         var ops = ImmutableArray.CreateBuilder<FrepOperand>(n.Operands.Length);
-        foreach (var o in n.Operands)
+        var modes = ImmutableArray.CreateBuilder<FrepMode>(n.Operands.Length);
+        for (int i = 0; i < n.Operands.Length; i++)
         {
+            var o = n.Operands[i];
             if (o.IsNode && o.NodeId == goneId)
             {
-                if (only is { } kept) ops.Add(kept);
+                if (only is not { } kept || ops.Contains(kept)) continue;
+                ops.Add(kept);
             }
             else ops.Add(o);
+            modes.Add(n.ModeAt(i));
         }
-        return n with { Operands = ops.ToImmutable() };
+        return n.WithRows(ops.ToImmutable(), modes.ToImmutable());
     }
 
-    const int Major = 1, Minor = 4; // 1.1: per-node Hidden; 1.2: Ref + Params; 1.3: Matrix; 1.4: followed by a shader cache
+    const int Major = 1, Minor = 5; // 1.1: per-node Hidden; 1.2: Ref + Params; 1.3: Matrix; 1.4: followed by a shader cache; 1.5: row modes after the cache
 
     public void Write(BinaryArchiveWriter w)
     {
@@ -414,7 +479,7 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         foreach (var n in Nodes)
         {
             w.WriteInt(n.Id);
-            w.WriteInt((int)n.Op);
+            w.WriteInt((int)(n.IsGroup ? FrepOps.PresetOf(n.Modes, n.Operands.Length) ?? FrepOp.Union : n.Op));
             w.WriteDouble(n.K);
             w.WriteInt(n.Operands.Length);
             foreach (var o in n.Operands)
@@ -439,6 +504,31 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
         }
     }
 
+    public void WriteModes(BinaryArchiveWriter w)
+    {
+        w.WriteInt(Nodes.Count);
+        foreach (var n in Nodes)
+        {
+            w.WriteInt(n.IsGroup ? n.Operands.Length : 0);
+            if (n.IsGroup)
+                for (int i = 0; i < n.Operands.Length; i++) w.WriteInt((int)n.ModeAt(i));
+        }
+    }
+
+    public FrepTree ReadModes(BinaryArchiveReader r)
+    {
+        int count = r.ReadInt();
+        if (count != Nodes.Count) throw new InvalidDataException("row modes don't match the tree");
+        var nodes = Nodes.ToBuilder();
+        for (int i = 0; i < count; i++)
+        {
+            var modes = new FrepMode[r.ReadInt()];
+            for (int j = 0; j < modes.Length; j++) modes[j] = (FrepMode)r.ReadInt();
+            if (nodes[i].IsGroup && modes.Length == nodes[i].Operands.Length) nodes[i] = nodes[i] with { Modes = [.. modes] };
+        }
+        return this with { Nodes = nodes.ToImmutable() };
+    }
+
     public static FrepTree Read(BinaryArchiveReader r, out int minor)
     {
         r.Read3dmChunkVersion(out var major, out minor);
@@ -455,7 +545,9 @@ public sealed record FrepTree(ImmutableList<FrepNode> Nodes, int NextId)
             var ops = ImmutableArray.CreateBuilder<FrepOperand>(nOps);
             for (int j = 0; j < nOps; j++)
                 ops.Add(new FrepOperand(r.ReadInt(), r.ReadGuid()));
-            nodes.Add(new FrepNode(id, op, k, ops.MoveToImmutable()));
+            nodes.Add(op.IsPreset()
+                ? new FrepNode(id, FrepOp.Group, k, ops.MoveToImmutable(), Modes: FrepOps.PresetModes(op, nOps))
+                : new FrepNode(id, op, k, ops.MoveToImmutable()));
         }
         if (minor >= 1)
             for (int i = 0; i < count; i++)
