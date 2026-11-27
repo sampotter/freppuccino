@@ -112,10 +112,21 @@ public static class FreppuccinoDisplayMode
         var capture = DisplayModeDescription.GetDisplayMode(CaptureId);
         foreach (var v in views)
         {
-            if (capture != null) v.ActiveViewport.DisplayMode = capture;
-            v.ActiveViewport.DisplayMode = m;
+            v.ActiveViewport.DisplayMode = capture ?? m;
             v.Redraw();
         }
+        if (capture == null) return true;
+        void Back(object? sender, EventArgs e)
+        {
+            RhinoApp.Idle -= Back;
+            foreach (var v in views)
+                if (v.ActiveViewport.DisplayMode?.Id == CaptureId)
+                {
+                    v.ActiveViewport.DisplayMode = m;
+                    v.Redraw();
+                }
+        }
+        RhinoApp.Idle += Back;
         return true;
     }
 

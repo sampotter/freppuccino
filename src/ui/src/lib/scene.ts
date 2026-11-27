@@ -28,8 +28,8 @@ export const PRIMITIVES: Record<string, PrimitiveInfo> = {
 
 export const OPERATIONS: Record<OperationKind, { label: string; icon: BrandIconName }> = {
   union: { label: 'Union', icon: 'union' },
-  subtract: { label: 'Subtract', icon: 'subtract' },
-  intersect: { label: 'Intersect', icon: 'intersect' },
+  subtract: { label: 'Difference', icon: 'subtract' },
+  intersect: { label: 'Intersection', icon: 'intersect' },
 }
 
 export const MODES: Record<RowMode, { label: string; icon: BrandIconName; tip: string }> = {
