@@ -148,6 +148,7 @@ public sealed class FrepPicker : MouseCallback
                 UiController_ClearNodes(p.Doc);
             }
             p.Doc.Objects.Select(id, true, true);
+            FrepSelection.RefreshGumball();
             p.Doc.Views.Redraw();
             return;
         }
