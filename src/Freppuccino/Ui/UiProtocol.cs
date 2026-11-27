@@ -110,7 +110,7 @@ public abstract record HostMessage
 }
 
 /// Full snapshot; sent in reply to "ready" and when the active document changes.
-public sealed record StateMessage(IReadOnlyList<SceneNode> Scene, IReadOnlyList<string> Selection, UiSettings Settings, string Theme, bool FrepMode) : HostMessage
+public sealed record StateMessage(IReadOnlyList<SceneNode> Scene, IReadOnlyList<string> Selection, UiSettings Settings, string Theme, bool FrepMode, string Doc) : HostMessage
 {
     public override string Type => "state";
 }

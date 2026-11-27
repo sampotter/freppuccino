@@ -64,7 +64,7 @@ Ids are strings: a primitive's Rhino object id (GUID), or a CSG node's name (`N3
 |---|---|
 | `settings {settings}` | display settings changed (Settings tab, `-FrepSettings`, or a failed change rolled back) |
 | `showTab {tab}` | `FrepSettings`: show that tab (`settings`) |
-| `state {scene, selection, settings: {units, display}, theme, frepMode}` | reply to `ready`; active document changed. `frepMode` = the active view shows the Freppuccino display mode |
+| `state {scene, selection, settings: {units, display}, theme, frepMode, doc}` | reply to `ready`; active document changed. `doc` identifies the document for the session (the inspector keys remembered slider maxima by it). `frepMode` = the active view shows the Freppuccino display mode |
 | `view {frepMode}` | the active view switched into or out of the Freppuccino display mode, or another view became active (checked on Idle) |
 | `scene {scene}` | object added/deleted/replaced/attributes changed, CSG tree changed (coalesced on Idle) |
 | `selection {ids}` | Rhino selection or panel node selection changed |

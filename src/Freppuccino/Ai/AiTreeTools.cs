@@ -122,7 +122,9 @@ public static partial class AiTools
         var (b, a) = (before.Find(id)!, after.Find(id)!);
         if (a.Op.IsWarp()) return;
         if (a.Operands.Length == 1 && b.Operands.Length > 1)
-            notes.Add($"{a.Name} has one operand left, so it just passes it through");
+            notes.Add(a.ModeAt(0) == FrepMode.Add
+                ? $"{a.Name} has one operand left, so it just passes it through"
+                : $"{a.Name} has one operand left and it is {ModeName(a.ModeAt(0))}, so the group draws nothing");
         if (a.IsGroup && b.Operands.Length > 0 && a.Operands.Length > 0 && a.Operands[0] != b.Operands[0])
             notes.Add($"{a.Name}'s first operand is now {OperandRef(doc, a.Operands[0], null)} ({ModeName(a.ModeAt(0))}); every operand applies its mode to the result of the ones above it");
     }

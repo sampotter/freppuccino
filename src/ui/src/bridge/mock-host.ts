@@ -104,7 +104,7 @@ export function createMockHost(): Transport {
   function handle(m: UiMessage) {
     switch (m.type) {
       case 'ready':
-        emit({ type: 'state', scene, selection, settings, theme, frepMode: false })
+        emit({ type: 'state', scene, selection, settings, theme, frepMode: false, doc: 'mock' })
         break
       case 'showFrepMode':
         emit({ type: 'view', frepMode: true })

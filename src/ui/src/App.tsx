@@ -1,5 +1,6 @@
 import { Box, Code2, Loader2, Settings, Sparkles, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from 'react'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -65,18 +66,55 @@ export default function App() {
   const selectedSet = useMemo(() => new Set(selection), [selection])
   const selected = useMemo(() => selection.map((id) => byId.get(id)).filter((n) => !!n), [selection, byId])
 
+  const headerRef = useRef<HTMLElement>(null)
+  const [fit, setFit] = useState(0)
+  const [headerWidth, setHeaderWidth] = useState(0)
+  useEffect(() => {
+    const el = headerRef.current
+    if (!el) return
+    const observer = new ResizeObserver(() => setHeaderWidth(el.clientWidth))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  const fitKey = useRef('')
+  useLayoutEffect(() => {
+    const el = headerRef.current
+    if (!el) return
+    const key = `${headerWidth}|${tab}|${host}|${synced}`
+    if (key !== fitKey.current) {
+      fitKey.current = key
+      if (fit !== 0) return setFit(0)
+    }
+    if (fit < 3 && el.scrollWidth > el.clientWidth) setFit(fit + 1)
+  })
+  const tabItem = (value: Tab, icon: ReactNode, label: string) => {
+    const showLabel = fit === 0 || (fit === 1 && value === tab)
+    const item = (
+      <ToggleGroupItem value={value} className="px-2" aria-label={label}>
+        {icon}
+        {showLabel && label}
+      </ToggleGroupItem>
+    )
+    return showLabel ? item : (
+      <Tooltip key={value}>
+        <TooltipTrigger asChild>{item}</TooltipTrigger>
+        <TooltipContent side="bottom">{label}</TooltipContent>
+      </Tooltip>
+    )
+  }
+
   return (
     <div className="relative flex h-dvh flex-col overflow-hidden">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <img src={appIcon} alt="" className="h-8 w-auto" />
+      <header ref={headerRef} className="flex h-12 shrink-0 items-center gap-2 overflow-hidden border-b px-4">
+        <img src={appIcon} alt="" className="h-8 w-auto shrink-0" />
         {/* Wordmark: ink = currentColor, "FRep" = --wordmark-accent (caramel / caramel-ink per theme) */}
         <span
           role="img"
           aria-label="FRepuccino"
-          className="h-4 text-ink [&>svg]:h-full [&>svg]:w-auto"
+          className={cn('h-4 shrink-0 text-ink [&>svg]:h-full [&>svg]:w-auto', fit === 3 && 'hidden')}
           dangerouslySetInnerHTML={{ __html: wordmark }}
         />
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {host === 'mock' && <Badge variant="new">Mock host</Badge>}
           {!synced && <span className="type-small text-muted-foreground">connecting…</span>}
           <ToggleGroup
@@ -88,18 +126,10 @@ export default function App() {
             onValueChange={(v) => v && setTab(v as Tab)}
             aria-label="Panel"
           >
-            <ToggleGroupItem value="scene" className="px-2">
-              <Box /> Scene
-            </ToggleGroupItem>
-            <ToggleGroupItem value="script" className="px-2">
-              <Code2 /> Script
-            </ToggleGroupItem>
-            <ToggleGroupItem value="ai" className="px-2">
-              <Sparkles /> AI
-            </ToggleGroupItem>
-            <ToggleGroupItem value="settings" className="px-2">
-              <Settings /> Settings
-            </ToggleGroupItem>
+            {tabItem('scene', <Box />, 'Scene')}
+            {tabItem('script', <Code2 />, 'Script')}
+            {tabItem('ai', <Sparkles />, 'AI')}
+            {tabItem('settings', <Settings />, 'Settings')}
           </ToggleGroup>
         </span>
       </header>

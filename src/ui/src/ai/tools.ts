@@ -175,7 +175,8 @@ export const TOOLS: ToolDef[] = [
     'Re-parents a primitive or node: detaches it from "from" (default: every operation using it) and inserts it into "to" at ' +
       'index (default end). Omit "to" (or null) to make it a root. from = to reorders, which changes the shape (operands ' +
       'combine top to bottom). It keeps its mode from the group it left; without "from" it keeps it only if every group it ' +
-      'left gave it the same mode, otherwise it arrives as add. mode overrides that. Into a deform: replaces its target. ' +
+      'left gave it the same mode, otherwise it arrives as add. mode overrides that, except at index 0, which is always ' +
+      'add. Into a deform: replaces its target. ' +
       'Restructure with this instead of deleting and rebuilding.',
     {
       item: { type: 'string', description: 'primitive or node ref to move' },

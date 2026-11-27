@@ -85,7 +85,7 @@ export type Theme = 'light' | 'dark'
 
 // ── Host → UI ──
 export type HostMessage =
-  | { type: 'state'; scene: SceneNode[]; selection: Id[]; settings: UiSettings; theme: Theme; frepMode: boolean }
+  | { type: 'state'; scene: SceneNode[]; selection: Id[]; settings: UiSettings; theme: Theme; frepMode: boolean; doc: string }
   | { type: 'scene'; scene: SceneNode[] }
   | { type: 'view'; frepMode: boolean }
   | { type: 'settings'; settings: UiSettings }

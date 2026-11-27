@@ -135,8 +135,17 @@ public sealed class UiController : IDisposable
         if (Parse<HiddenLineDisplay>(request.HiddenLines) is { } h) FrepDisplaySettings.HiddenLines = h;
         if (Parse<GeometryDisplay>(request.Geometry) is { } g)
         {
-            FrepDisplaySettings.Geometry = g;
-            if (FrepDisplaySettings.Geometry != g)
+            bool applied;
+            try
+            {
+                FrepDisplaySettings.Geometry = g;
+                applied = FrepDisplaySettings.Geometry == g;
+            }
+            catch (Exception)
+            {
+                applied = false;
+            }
+            if (!applied)
             {
                 web.Send(new NoticeMessage("warning", "Couldn't apply that display setting."));
                 OnDisplayChanged();
@@ -282,7 +291,7 @@ public sealed class UiController : IDisposable
         sceneDirty = selectionDirty = false;
         sentFrepMode = FrepMode(doc);
         var theme = Rhino.Runtime.HostUtils.RunningInDarkMode ? "dark" : "light";
-        web.Send(new StateMessage(BuildScene(doc), SelectedIds(doc), Settings(doc), theme, sentFrepMode));
+        web.Send(new StateMessage(BuildScene(doc), SelectedIds(doc), Settings(doc), theme, sentFrepMode, doc.RuntimeSerialNumber.ToString()));
     }
 
     static string NodeKey(int id) => FrepTree.NodeName(id);

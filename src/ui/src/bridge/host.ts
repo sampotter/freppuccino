@@ -68,6 +68,7 @@ export interface HostState {
   notice: Notice | null
   compiling: number
   tabRequest: { tab: PanelTab; seq: number } | null
+  doc: string
 }
 
 const transport = createTransport()
@@ -83,6 +84,7 @@ let state: HostState = {
   notice: null,
   compiling: 0,
   tabRequest: null,
+  doc: '',
 }
 const listeners = new Set<() => void>()
 let noticeId = 0
@@ -104,7 +106,7 @@ function orderSelection(prev: Id[], next: Id[]): Id[] {
 transport.listen((m) => {
   switch (m.type) {
     case 'state':
-      set({ synced: true, scene: m.scene, selection: m.selection, settings: m.settings, theme: m.theme, frepMode: m.frepMode })
+      set({ synced: true, scene: m.scene, selection: m.selection, settings: m.settings, theme: m.theme, frepMode: m.frepMode, doc: m.doc })
       break
     case 'scene':
       set({ scene: m.scene })

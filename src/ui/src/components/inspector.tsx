@@ -293,10 +293,12 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
   const operands = canSwap && swapped ? [...props.operands].reverse() : props.operands
   const role = (i: number) => (op === 'subtract' ? (i === 0 ? 'Base' : 'Subtract') : `#${i + 1}`)
   const preset = existing ? presetOf(existing) : op
-  const [max, setMaxState] = useState(() => (existing && blendMax.get(existing.id)) || 20)
+  const doc = useHost((s) => s.doc)
+  const maxKey = existing ? `${doc}/${existing.id}` : ''
+  const [max, setMaxState] = useState(() => (existing && blendMax.get(maxKey)) || 20)
   const setMax = (v: number) => {
     setMaxState(v)
-    if (existing) blendMax.set(existing.id, v)
+    if (existing) blendMax.set(maxKey, v)
   }
 
   return (
