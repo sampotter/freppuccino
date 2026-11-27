@@ -66,7 +66,6 @@ public sealed class FrepPicker : MouseCallback
         bool rhino = RhinoUnder(view, e.ViewportPoint);
         if (e.ShiftKeyDown && sessions == 0)
         {
-            if (rhino) return;
             // Leaf: the nearest control instance. A miss is left to Rhino (Shift+click = add to its selection).
             var leaf = PickOutline(doc, vp, client, rootsToo: false, out var ambiguous, out var shared)?.Instance;
             string? note = null;
@@ -81,16 +80,18 @@ public sealed class FrepPicker : MouseCallback
                 ambiguous = false;
                 note = $"Freppuccino: selected {Label(doc, leaf)}, {i + 1} of {shared.Count} shapes sharing that outline. Shift+click again for the next.";
             }
-            if (leaf == null && !ambiguous) leaf = PickInstance(doc, vp, client, out ambiguous);
+            if (leaf == null && !ambiguous)
+            {
+                if (rhino && PickRoot(doc, vp, client) == null) return;
+                leaf = PickInstance(doc, vp, client, out ambiguous);
+            }
             if (leaf == null && !ambiguous) return;
             e.Cancel = true;
             pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false, note);
             return;
         }
 
-        var outline = PickOutline(doc, vp, client, rootsToo: true, out _, out _);
-        if (rhino && outline?.Instance != null) outline = null;
-        var hit = outline?.Root ?? PickRoot(doc, vp, client);
+        var hit = PickOutline(doc, vp, client, rootsToo: true, out _, out _)?.Root ?? PickRoot(doc, vp, client);
         if (hit == null && !rhino)
         {
             // An exposed control (e.g. a cutter's face outside the result) selects the root it belongs to.
@@ -232,7 +233,7 @@ public sealed class FrepPicker : MouseCallback
             ? h.Root == frontRoot
             : frontInst != null && h.Inst != null && h.Inst.SamePath(frontInst);
         var best = hits.OrderBy(Front).ThenBy(h => h.Px).First();
-        if (rootsToo) return (best.Root, best.Inst);
+        if (rootsToo) return (best.Root, null);
 
         var chosen = best.Inst!;
         var probes = Radii.Where(r => r > 2).SelectMany(r => Ring.Select(d => client + d * r)).Prepend(client).ToArray();
