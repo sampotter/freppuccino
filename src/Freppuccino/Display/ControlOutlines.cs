@@ -33,7 +33,7 @@ public static class ControlOutlines
     /// For DisplayConduit.PreDrawObject: hide control breps in Freppuccino-mode views.
     public static void Suppress(DrawObjectEventArgs e)
     {
-        if (FreppuccinoDisplayMode.IsActive(e.Display) && IsControl(e.RhinoObject)) e.DrawObject = false;
+        if (FreppuccinoDisplayMode.IsActive(e.Display) && (IsControl(e.RhinoObject) || Commands.FrepMeshCommand.IsBaked(e.RhinoObject))) e.DrawObject = false;
     }
 
     /// <paramref name="selected"/>: false = every unselected instance; true = the selected ones.
