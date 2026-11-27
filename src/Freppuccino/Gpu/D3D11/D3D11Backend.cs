@@ -147,9 +147,9 @@ public sealed class D3D11Backend : IGpuBackend
         {
             if (swap && occluded && EnsurePost())
             {
-                var m = pipeline.Viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+                var m = WorldToClip(pipeline);
                 for (int i = 0; i < 16; i++) clip[i] = (float)m[i / 4, i % 4];
-                pipeline.Viewport.GetFrustum(out _, out _, out _, out _, out var fn, out var ff);
+                var (fn, ff) = PipelineNearFar(pipeline) ?? (0, 0);
                 TraceDraw = (m, fn, ff);
                 gbufferDrawn = false;
                 WroteDepth = DrawOccludedSwapped(ctx, draw, Occlusion);
@@ -164,6 +164,32 @@ public sealed class D3D11Backend : IGpuBackend
             if (ann != IntPtr.Zero) { EndEvent(ann); SafeRelease(ref ann); }
         }
         return true;
+    }
+
+    public static Rhino.Geometry.Transform WorldToClip(DisplayPipeline pipeline)
+    {
+        var vp = pipeline.Viewport;
+        var m = vp.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+        if (PipelineNearFar(pipeline) is not var (near, far)) return m;
+        vp.GetFrustum(out _, out _, out _, out _, out var vn, out var vf);
+        if (Math.Abs(near - vn) <= 1e-9 * Math.Max(1, Math.Abs(vn)) && Math.Abs(far - vf) <= 1e-9 * Math.Max(1, Math.Abs(vf))) return m;
+        var info = new Rhino.DocObjects.ViewportInfo(vp);
+        return info.SetFrustumNearFar(near, far) ? info.GetXform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip) : m;
+    }
+
+    public static (double Near, double Far)? PipelineNearFar(DisplayPipeline pipeline)
+    {
+        float[]? p;
+        try { p = pipeline.GetOpenGLCameraToClip(); }
+        catch (Exception) { return null; }
+        if (p is not { Length: 16 }) return null;
+        double a = p[10], b = p[14], n, f;
+        if (Math.Abs(p[15]) < 1e-9) { n = b / (a + 1); f = b / (a - 1); }
+        else if (Math.Abs(a) > 1e-30) { n = (b + 1) / a; f = (b - 1) / a; }
+        else return null;
+        if (n > f) (n, f) = (f, n);
+        if (!double.IsFinite(n) || !double.IsFinite(f) || f - n <= 0 || (Math.Abs(p[15]) < 1e-9 && n <= 0)) return null;
+        return (n, f);
     }
 
     public bool ExpectsDepth(DisplayPipeline pipeline)
@@ -347,11 +373,11 @@ public sealed class D3D11Backend : IGpuBackend
         UpdateSubresource(ctx, postCb, System.Runtime.InteropServices.MemoryMarshal.AsBytes(v));
     }
 
-    public bool DrawOutlines(DisplayPipeline pipeline, int serial, float[] endpoints, System.Drawing.Color ink, float faint, float halfWidth, float pullPx)
+    public bool DrawOutlines(DisplayPipeline pipeline, int serial, float[] endpoints, System.Drawing.Color ink, float faint, float halfWidth, float pullPx, bool added = false)
     {
         if (!OperatingSystem.IsWindows()) return false;
         if (endpoints.Length < 8) return true;
-        try { return DrawOutlinesWin(pipeline, serial, endpoints, ink, faint, halfWidth, pullPx); }
+        try { return DrawOutlinesWin(pipeline, serial, endpoints, ink, faint, halfWidth, pullPx, added); }
         catch (Exception ex) { LogOnce("outlines:" + ex.GetType().Name, "Freppuccino D3D11: outline pass failed: " + ex.Message); return false; }
     }
 
@@ -421,14 +447,14 @@ public sealed class D3D11Backend : IGpuBackend
     static int DepthSrvFormat(int typeless) => typeless switch { 19 or 20 => 21, 44 or 45 => 46, 39 or 40 => 41, 53 or 55 => 56, _ => -1 };
 
     [SupportedOSPlatform("windows")]
-    unsafe bool DrawOutlinesWin(DisplayPipeline pipeline, int serial, float[] endpoints, System.Drawing.Color ink, float faint, float halfWidth, float pullPx)
+    unsafe bool DrawOutlinesWin(DisplayPipeline pipeline, int serial, float[] endpoints, System.Drawing.Color ink, float faint, float halfWidth, float pullPx, bool added)
     {
         var dev = pipeline.GetDirect3d11Device();
         var ctx = pipeline.GetDirect3d11DeviceContext();
         if (dev == IntPtr.Zero || dev != device || !initOk || ctxState == IntPtr.Zero || !EnsurePost() || !EnsureOutline()) return Reject("setup");
         if (outlineUniforms == null || gPos.Srv == IntPtr.Zero || TraceSource.Serial != serial || TraceSource.Viewport != (pipeline.Viewport?.Id ?? Guid.Empty)) return Reject("stale-gbuffer");
         if (pipeline.Viewport is not { } viewport) return Reject("stale-gbuffer");
-        var now = viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+        var now = WorldToClip(pipeline);
         for (int i = 0; i < 16; i++)
         {
             double a = now[i / 4, i % 4], b = gbufClip[i];
@@ -470,7 +496,7 @@ public sealed class D3D11Backend : IGpuBackend
                 v[0] = vp.Width; v[1] = vp.Height; v[6] = vp.X; v[7] = vp.Y;
                 gbufClip.CopyTo(v[8..]);
                 v[24] = vp.MinDepth; v[25] = vp.MaxDepth; v[26] = td.Format is 53 or 55 ? 3e-5f : td.Format is 44 or 45 ? 2e-7f : 1e-6f;
-                v[28] = pullPx; v[29] = halfWidth; v[30] = faint;
+                v[28] = pullPx; v[29] = halfWidth; v[30] = faint; v[31] = added ? 1 : 0;
                 v[32] = ink.R / 255f; v[33] = ink.G / 255f; v[34] = ink.B / 255f; v[35] = 1;
                 UpdateSubresource(ctx, postCb, System.Runtime.InteropServices.MemoryMarshal.AsBytes(v));
                 OMSetRenderTargets(ctx, rtvs[..1], IntPtr.Zero);
@@ -483,7 +509,7 @@ public sealed class D3D11Backend : IGpuBackend
                 VSSetConstantBuffer(ctx, 0, cb); PSSetConstantBuffer(ctx, 0, cb);
                 VSSetConstantBuffer(ctx, 1, postCb); PSSetConstantBuffer(ctx, 1, postCb);
                 VSSetShaderResource(ctx, 4, segSrv);
-                PSSetShaderResources(ctx, 0, [gPos.Srv, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, depthSrv]);
+                PSSetShaderResources(ctx, 0, [gPos.Srv, gNrm.Srv, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, depthSrv]);
                 RSSetState(ctx, rs);
                 OMSetBlendState(ctx, alphaBlend, null, 0xffffffff);
                 OMSetDepthStencilState(ctx, dss, 0);

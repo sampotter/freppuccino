@@ -86,7 +86,7 @@ public static unsafe class DepthTrace
                 if (dssAfter != IntPtr.Zero) { ((delegate* unmanaged<IntPtr, int*, void>)V(dssAfter)[7])(dssAfter, dd); SafeRelease(ref dssAfter); }
                 bool changed = before != null && buf != null && !before.SequenceEqual(buf[0]);
                 double Ours(Rhino.Geometry.Transform c) { double cz = c[2, 0] * q.X + c[2, 1] * q.Y + c[2, 2] * q.Z + c[2, 3], cw = c[3, 0] * q.X + c[3, 1] * q.Y + c[3, 2] * q.Z + c[3, 3]; return 0.5 - 0.5 * cz / cw; }
-                var cur = vp.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+                var cur = D3D11Backend.WorldToClip(dp);
                 string drawn = backend != null ? Ours(backend.TraceDraw.Clip).ToString("0.000000") : "n/a";
                 log.AppendLine($"{frame} ref q ({q.X:G6},{q.Y:G6},{q.Z:G6}) px (6,6) before {(before != null ? string.Join("/", before.Select(d => d.ToString("0.000000"))) : beforeNote)} rhino-line {(buf != null ? string.Join("/", buf[0].Select(d => d.ToString("0.000000"))) : note)} written {changed} dss-after enable {dd[0]} write {dd[1]} func {dd[2]} ours-current {Ours(cur):0.000000} ours-at-draw {drawn}");
             }
@@ -151,7 +151,12 @@ public static unsafe class DepthTrace
         if (vp != null)
         {
             vp.GetFrustum(out _, out _, out _, out _, out var cn, out var cf);
-            var cur = vp.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+            var cur = D3D11Backend.WorldToClip(dp);
+            var stale = vp.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+            double xy = 0;
+            for (int i = 0; i < 16; i++) if (i / 4 != 2) xy = Math.Max(xy, Math.Abs(cur[i / 4, i % 4] - stale[i / 4, i % 4]));
+            sb.Append($" xydiff {xy:G3}");
+            if (D3D11Backend.PipelineNearFar(dp) is var (pn, pf)) sb.Append($" pipenf {pn:G6}..{pf:G6}");
             sb.Append($" cam ({vp.CameraLocation.X:G6},{vp.CameraLocation.Y:G6},{vp.CameraLocation.Z:G6}) target ({vp.CameraTarget.X:G6},{vp.CameraTarget.Y:G6},{vp.CameraTarget.Z:G6}) dir ({vp.CameraDirection.X:G4},{vp.CameraDirection.Y:G4},{vp.CameraDirection.Z:G4}) nf {cn:G6}..{cf:G6}");
             if (backend != null)
             {

@@ -19,8 +19,12 @@ public sealed class FrepDisplayForm : Form
         open.Show();
     }
 
-    readonly DropDown cutters = Choices<CutterDisplay>();
+    readonly DropDown cutters = Choices<ShapeDisplay>();
+    readonly DropDown others = Choices<ShapeDisplay>();
     readonly DropDown geometry = Choices<GeometryDisplay>();
+    readonly (ShapeDisplay Cutters, ShapeDisplay Others, GeometryDisplay Geometry) atOpen =
+        (FrepDisplaySettings.Cutters, FrepDisplaySettings.OtherShapes, FrepDisplaySettings.Geometry);
+    bool keep;
 
     FrepDisplayForm()
     {
@@ -33,17 +37,21 @@ public sealed class FrepDisplayForm : Form
         Padding = new Eto.Drawing.Padding(10);
 
         Sync();
-        cutters.SelectedIndexChanged += (_, _) => { if (cutters.SelectedIndex >= 0) FrepDisplaySettings.Cutters = (CutterDisplay)cutters.SelectedIndex; };
+        cutters.SelectedIndexChanged += (_, _) => { if (cutters.SelectedIndex >= 0) FrepDisplaySettings.Cutters = (ShapeDisplay)cutters.SelectedIndex; };
+        others.SelectedIndexChanged += (_, _) => { if (others.SelectedIndex >= 0) FrepDisplaySettings.OtherShapes = (ShapeDisplay)others.SelectedIndex; };
         geometry.SelectedIndexChanged += (_, _) => { if (geometry.SelectedIndex >= 0) FrepDisplaySettings.Geometry = (GeometryDisplay)geometry.SelectedIndex; };
         FrepDisplaySettings.Changed += Sync;
 
-        var close = new Button { Text = "Close" };
-        close.Click += (_, _) => Close();
+        var ok = new Button { Text = "OK" };
+        ok.Click += (_, _) => Accept();
+        var cancel = new Button { Text = "Cancel" };
+        cancel.Click += (_, _) => Close();
         KeyDown += (_, e) =>
         {
-            if (e.Key != Keys.Escape) return;
+            if (e.Key == Keys.Escape) Close();
+            else if (e.Key == Keys.Enter) Accept();
+            else return;
             e.Handled = true;
-            Close();
         };
 
         Content = new TableLayout
@@ -51,16 +59,28 @@ public sealed class FrepDisplayForm : Form
             Spacing = new Eto.Drawing.Size(8, 8),
             Rows =
             {
-                new TableRow(new Label { Text = "Cutters", VerticalAlignment = VerticalAlignment.Center }, new TableCell(cutters, true)),
-                new TableRow(new Label { Text = "Rhino geometry", VerticalAlignment = VerticalAlignment.Center }, new TableCell(geometry, true)),
-                new TableRow(null, new TableLayout(new TableRow(new TableCell(null, true), close))),
+                Row(FrepDisplaySettings.CuttersLabel, cutters),
+                Row(FrepDisplaySettings.OtherShapesLabel, others),
+                Row(FrepDisplaySettings.GeometryLabel, geometry),
+                new TableRow(null, new TableLayout { Spacing = new Eto.Drawing.Size(8, 0), Rows = { new TableRow(new TableCell(null, true), ok, cancel) } }),
             },
         };
+        Shown += (_, _) => ok.Focus();
+    }
+
+    static TableRow Row(string label, DropDown choices) =>
+        new(new Label { Text = label, VerticalAlignment = VerticalAlignment.Center }, new TableCell(choices, true));
+
+    void Accept()
+    {
+        keep = true;
+        Close();
     }
 
     void Sync()
     {
         cutters.SelectedIndex = (int)FrepDisplaySettings.Cutters;
+        others.SelectedIndex = (int)FrepDisplaySettings.OtherShapes;
         geometry.SelectedIndex = (int)FrepDisplaySettings.Geometry;
     }
 
@@ -68,6 +88,12 @@ public sealed class FrepDisplayForm : Form
     {
         FrepDisplaySettings.Changed -= Sync;
         open = null;
+        if (!keep)
+        {
+            FrepDisplaySettings.Cutters = atOpen.Cutters;
+            FrepDisplaySettings.OtherShapes = atOpen.Others;
+            FrepDisplaySettings.Geometry = atOpen.Geometry;
+        }
         base.OnClosed(e);
     }
 

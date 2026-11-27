@@ -154,10 +154,39 @@ static class OcclusionShaders
         StructuredBuffer<float4> segs : register(t4);
         struct V { float4 pos : SV_Position; float3 world : WORLD; float side : SIDE; };
 
+        static const int ADDED_REACH = 2;
+        static const float ADDED_TOL = 1.5;
+        static const float ADDED_SPAN = 64.0;
+
         float DepthOf(float3 p)
         {
             float4 q = float4(p, 1.0);
             return lerp(depth.x, depth.y, saturate(0.5 - 0.5 * dot(clipZ, q) / dot(clipW, q)));
+        }
+
+        bool Surface(float4 S) { return S.w > 0.0 || S.w == -1.0; }
+
+        bool OnOrInside(float3 p, float foot, bool persp)
+        {
+            float4 q = float4(p, 1.0);
+            float w = dot(clipW, q);
+            int2 cc = int2(floor(float2(0.5 + 0.5 * dot(clipX, q) / w, 0.5 - 0.5 * dot(clipY, q) / w) * size.xy));
+            float3 view = persp ? normalize(p - camPos.xyz) : camZ.xyz;
+            float tol = ADDED_TOL * foot;
+            int2 hi = int2(size.xy) - 1;
+            [loop] for (int dy = -ADDED_REACH; dy <= ADDED_REACH; dy++)
+            [loop] for (int dx = -ADDED_REACH; dx <= ADDED_REACH; dx++)
+            {
+                int2 c = cc + int2(dx, dy);
+                if (any(c < 0) || any(c > hi)) continue;
+                float4 S = gPos.Load(int3(c, 0));
+                if (!Surface(S)) continue;
+                float3 d = p - S.xyz;
+                if (dx == 0 && dy == 0 && dot(d, view) > tol) return true;
+                float3 n = gNrm.Load(int3(c, 0)).xyz;
+                if (abs(dot(d, n)) < tol && length(d) < ADDED_SPAN * foot) return true;
+            }
+            return false;
         }
 
         float4 main(V i) : SV_Target
@@ -175,6 +204,11 @@ static class OcclusionShaders
             float4 P = gPos.Load(int3(c, 0));
             float frepD = (P.w > 0.0 || P.w == -1.0) ? DepthOf(P.xyz) : 2.0;
             float rhinoD = RhinoDepth(px);
+            if (mode.w > 0.5)
+            {
+                if (rhinoD < lineD - depth.z || OnOrInside(i.world, foot, persp)) discard;
+                return float4(ink.rgb, cov);
+            }
             if (rhinoD < lineD - depth.z && rhinoD < frepD - depth.z) discard;
             float a = frepD < lineD ? mode.z : 1.0;
             return float4(ink.rgb, a * cov);

@@ -2,26 +2,42 @@ using Rhino;
 
 namespace Freppuccino.Display;
 
-public enum CutterDisplay { Silhouette, Wireframe, Hidden }
+public enum ShapeDisplay { Silhouette, Wireframe, Hidden }
 
 public enum GeometryDisplay { Ghosted, Shaded, Wireframe, Arctic, Rendered }
 
 public static class FrepDisplaySettings
 {
-    const string CuttersKey = "DisplayCutters", GeometryKey = "DisplayGeometry";
+    const string CuttersKey = "DisplayCutters", OtherShapesKey = "DisplayOtherShapes", GeometryKey = "DisplayGeometry";
+
+    public const string CuttersLabel = "Cutters", OtherShapesLabel = "Other shapes", GeometryLabel = "Rhino geometry";
+
+    public static string OptionName(string label) => string.Concat(label.Split(' ').Select(w => char.ToUpperInvariant(w[0]) + w[1..]));
 
     public static event Action? Changed;
 
-    public static CutterDisplay Cutters
+    public static ShapeDisplay Cutters
     {
-        get => Read(CuttersKey, CutterDisplay.Silhouette);
-        set
-        {
-            if (value == Cutters) return;
-            Write(CuttersKey, value);
-            Changed?.Invoke();
-            RhinoDoc.ActiveDoc?.Views.Redraw();
-        }
+        get => Read(CuttersKey, ShapeDisplay.Silhouette);
+        set => SetShapes(CuttersKey, Cutters, value);
+    }
+
+    public static ShapeDisplay OtherShapes
+    {
+        get => Read(OtherShapesKey, ShapeDisplay.Silhouette);
+        set => SetShapes(OtherShapesKey, OtherShapes, value);
+    }
+
+    public static ShapeDisplay For(bool cutter) => cutter ? Cutters : OtherShapes;
+
+    public static bool AnyHidden => Cutters == ShapeDisplay.Hidden || OtherShapes == ShapeDisplay.Hidden;
+
+    static void SetShapes(string key, ShapeDisplay old, ShapeDisplay value)
+    {
+        if (value == old) return;
+        Write(key, value);
+        Changed?.Invoke();
+        RhinoDoc.ActiveDoc?.Views.Redraw();
     }
 
     public static GeometryDisplay Geometry

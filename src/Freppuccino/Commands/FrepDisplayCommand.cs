@@ -20,6 +20,7 @@ public class FrepDisplayCommand : Command
             return Result.Success;
         }
         var cutters = FrepDisplaySettings.Cutters;
+        var others = FrepDisplaySettings.OtherShapes;
         var geometry = FrepDisplaySettings.Geometry;
         var go = new GetOption();
         go.SetCommandPrompt("Freppuccino display");
@@ -27,16 +28,19 @@ public class FrepDisplayCommand : Command
         while (true)
         {
             go.ClearCommandOptions();
-            int c = go.AddOptionEnumList("Cutters", cutters);
+            int c = go.AddOptionEnumList(FrepDisplaySettings.OptionName(FrepDisplaySettings.CuttersLabel), cutters);
+            int s = go.AddOptionEnumList(FrepDisplaySettings.OptionName(FrepDisplaySettings.OtherShapesLabel), others);
             int g = go.AddOptionEnumList("Geometry", geometry);
             var r = go.Get();
             if (r == Rhino.Input.GetResult.Nothing) break;
             if (r != Rhino.Input.GetResult.Option) return Result.Cancel;
             var o = go.Option();
-            if (o.Index == c) cutters = go.GetSelectedEnumValue<CutterDisplay>();
+            if (o.Index == c) cutters = go.GetSelectedEnumValue<ShapeDisplay>();
+            else if (o.Index == s) others = go.GetSelectedEnumValue<ShapeDisplay>();
             else if (o.Index == g) geometry = go.GetSelectedEnumValue<GeometryDisplay>();
         }
         FrepDisplaySettings.Cutters = cutters;
+        FrepDisplaySettings.OtherShapes = others;
         FrepDisplaySettings.Geometry = geometry;
         return Result.Success;
     }

@@ -48,7 +48,7 @@ public static class FrepSelection
         {
             var added = e.RhinoObjects.Select(FrepCarriers.NodeOf).OfType<int>().ToList();
             if (added.Count > 0) UiController.SetSelectedNodes(e.Document, UiController.SelectedNodes(e.Document).Concat(added));
-            if (explicitDepth == 0 && FrepDisplaySettings.Cutters == CutterDisplay.Hidden) DropHiddenCutters(e.Document, e.RhinoObjects);
+            if (explicitDepth == 0 && FrepDisplaySettings.AnyHidden) DropHidden(e.Document, e.RhinoObjects);
         };
         // Esc at the idle prompt (EscapeKeyPressed only fires during long operations).
         RhinoApp.KeyboardEvent += key =>
@@ -91,15 +91,15 @@ public static class FrepSelection
         }
     }
 
-    /// Hidden cutters swept up by Rhino's own selection (window, crossing, SelAll) while a Freppuccino view is active:
+    /// Hidden control shapes swept up by Rhino's own selection (window, crossing, SelAll) while a Freppuccino view is active:
     /// deselected at once, before anything can act on them.
-    static void DropHiddenCutters(RhinoDoc doc, IEnumerable<RhinoObject> objects)
+    static void DropHidden(RhinoDoc doc, IEnumerable<RhinoObject> objects)
     {
         if (doc.Views.ActiveView?.ActiveViewport is not { } vp || !FrepPicker.IsFrepView(vp)) return;
-        var cutters = ControlOutlines.CutterObjects(doc);
+        var hidden = ControlOutlines.HiddenObjects(doc);
         bool dropped = false;
         foreach (var o in objects)
-            if (cutters.Contains(o.Id) && o.IsSelected(false) != 0)
+            if (hidden.Contains(o.Id) && o.IsSelected(false) != 0)
             {
                 o.Select(false);
                 dropped = true;
