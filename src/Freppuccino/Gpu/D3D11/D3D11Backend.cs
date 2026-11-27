@@ -57,7 +57,7 @@ public sealed class D3D11Backend : IGpuBackend
     int targetW, targetH;
     readonly float[] clip = new float[16];
 
-    public static float DepthBiasPx { get; set; } = 1f;
+    public static float DepthBiasPx { get; set; } = 0f;
     public bool WroteDepth { get; private set; }
 
     public bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, false);
