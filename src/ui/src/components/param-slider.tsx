@@ -2,6 +2,7 @@ import { useId, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 /**
  * Label + numeric field + slider. onChange fires while dragging (use for cheap live updates),
@@ -76,30 +77,32 @@ export function ParamSlider(props: {
           {props.units && <span className="type-numeric w-8 text-muted-foreground">{abbreviate(props.units)}</span>}
         </div>
       </div>
-      <div className="flex items-center gap-2">
-        <Slider
-          className="flex-1"
-          min={Math.min(min, value)}
-          max={Math.max(props.max, value)}
-          step={step}
-          value={[value]}
-          disabled={props.disabled}
-          onValueChange={([v]) => {
-            show(v)
-            dragged.current = v
-            props.onChange?.(v)
-          }}
-          // Deferred: on keys Radix commits before onValueChange.
-          onValueCommit={([v]) => queueMicrotask(() => commit(v))}
-          // Radix skips onValueCommit when a drag ends where it started; close the gesture anyway.
-          onPointerUp={() =>
-            setTimeout(() => {
-              if (dragged.current !== null) commit(dragged.current)
-            })
-          }
-        />
-        {props.onMaxChange && <MaxField value={props.max} onCommit={props.onMaxChange} />}
-      </div>
+      <Slider
+        min={Math.min(min, value)}
+        max={Math.max(props.max, value)}
+        step={step}
+        value={[value]}
+        disabled={props.disabled}
+        onValueChange={([v]) => {
+          show(v)
+          dragged.current = v
+          props.onChange?.(v)
+        }}
+        // Deferred: on keys Radix commits before onValueChange.
+        onValueCommit={([v]) => queueMicrotask(() => commit(v))}
+        // Radix skips onValueCommit when a drag ends where it started; close the gesture anyway.
+        onPointerUp={() =>
+          setTimeout(() => {
+            if (dragged.current !== null) commit(dragged.current)
+          })
+        }
+      />
+      {props.onMaxChange && (
+        <div className="type-numeric -mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+          <span>{format(min)}</span>
+          <MaxField value={props.max} onCommit={props.onMaxChange} />
+        </div>
+      )}
     </div>
   )
 }
@@ -117,18 +120,21 @@ function MaxField(props: { value: number; onCommit: (v: number) => void }) {
     props.onCommit(v)
   }
   return (
-    <label className="flex shrink-0 items-center gap-1">
-      <span className="type-label text-muted-foreground">max</span>
-      <Input
-        inputMode="decimal"
-        aria-label="Slider maximum"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
-        className="type-numeric h-6 w-12 px-1 text-right"
-      />
-    </label>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <input
+          inputMode="decimal"
+          aria-label="Slider maximum"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          className="h-5 w-14 rounded-sm border border-transparent bg-transparent px-1 text-right text-muted-foreground outline-none hover:border-input focus:border-input focus:bg-card focus:text-foreground"
+        />
+      </TooltipTrigger>
+      <TooltipContent side="bottom">Slider maximum. Click to change.</TooltipContent>
+    </Tooltip>
   )
 }
 
