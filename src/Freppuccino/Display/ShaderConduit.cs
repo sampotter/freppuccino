@@ -85,12 +85,15 @@ public sealed class ShaderConduit : DisplayConduit
                 RhinoApp.WriteLine($"Freppuccino: uniform budget full, {scene.Dropped} primitives not drawn");
                 loggedCap = true;
             }
+            bool late = WritesDepth(gpu, dp);
             // Control outlines first, so blends drawn over them hide what they cover. Captures (AI screenshots,
             // AiCapture.CleanCapture) show just the model.
-            if (!AiCapture.Active) ControlOutlines.Draw(dp, e.RhinoDoc, selected: false);
+            if (!AiCapture.Active && !late) ControlOutlines.Draw(dp, e.RhinoDoc, selected: false);
             dp.Flush(); // Rhino batches curves; without this they land after (over) our GPU draw
             if (scene.Program != null)
                 drew |= DrawScene(gpu, dp, e.RhinoDoc, scene);
+            if (drew) RhinoStateReset.Apply(dp);
+            if (!AiCapture.Active && late) DrawDepthTestedOutlines(gpu, dp, e.RhinoDoc);
 
             if (!AiCapture.Active) // AI screenshots: just the model
             {
@@ -125,9 +128,36 @@ public sealed class ShaderConduit : DisplayConduit
     }
 
 #if RHINO9
+    static bool WritesDepth(IGpuBackend gpu, DisplayPipeline dp) => gpu is Gpu.D3D11.D3D11Backend d3d && d3d.ExpectsDepth(dp);
+
+    static void DrawDepthTestedOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc)
+    {
+        if (gpu is Gpu.D3D11.D3D11Backend { WroteDepth: true })
+        {
+            dp.PushDepthTesting(false);
+            dp.PushDepthWriting(false);
+            try
+            {
+                ControlOutlines.Draw(dp, doc, selected: false, hidden: true);
+                dp.Flush();
+            }
+            finally
+            {
+                dp.PopDepthWriting();
+                dp.PopDepthTesting();
+            }
+        }
+        ControlOutlines.Draw(dp, doc, selected: false);
+        dp.Flush();
+    }
+
     static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms) =>
         gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.DrawOccluded(dp, program, uniforms) : gpu.Draw(dp, program, uniforms);
 #else
+    static bool WritesDepth(IGpuBackend gpu, DisplayPipeline dp) => false;
+
+    static void DrawDepthTestedOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc) { }
+
     static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms) =>
         gpu.Draw(dp, program, uniforms);
 #endif

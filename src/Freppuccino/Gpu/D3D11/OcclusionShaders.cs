@@ -19,7 +19,7 @@ static class OcclusionShaders
         static const float BLUR_NORMAL_FLOOR = 0.25;
 
         cbuffer Frame : register(b0) { float4 camPos, camX, camY, camZ, frustum, params, bound; };
-        cbuffer Post : register(b1) { float4 size; float4 dir; };
+        cbuffer Post : register(b1) { float4 size; float4 dir; float4 clipX, clipY, clipZ, clipW; float4 depth; float4 mode; };
         Texture2D<float4> gPos : register(t0);
         Texture2D<float4> gNrm : register(t1);
         Texture2D<float4> gColor : register(t2);
@@ -118,13 +118,25 @@ static class OcclusionShaders
 
     public const string Composite = Common + """
 
-        float4 main(float4 sv : SV_Position) : SV_Target
+        float SurfaceDepth(float3 p)
+        {
+            float3 v = p - camPos.xyz;
+            bool persp = camPos.w > 0.5;
+            float foot = (frustum.y - frustum.x) / size.x * (persp ? dot(v, camZ.xyz) / camZ.w : 1.0);
+            float4 q = float4(p + (persp ? normalize(v) : camZ.xyz) * mode.z * foot, 1.0);
+            return lerp(depth.x, depth.y, saturate(0.5 - 0.5 * dot(clipZ, q) / dot(clipW, q)));
+        }
+
+        float4 main(float4 sv : SV_Position, out float z : SV_Depth) : SV_Target
         {
             int2 c = int2(sv.xy - dir.zw);
             float4 col = gColor.Load(int3(c, 0));
             if (col.a <= 0.0) discard;
             float4 P = gPos.Load(int3(c, 0));
-            if (P.w <= 0.0) return float4(col.rgb, 1.0);
+            bool band = P.w < -1.5 || P.w == 0.0;
+            if (band != (mode.x > 0.5)) discard;
+            z = band ? depth.y : SurfaceDepth(P.xyz);
+            if (P.w <= 0.0 || mode.y < 0.5) return float4(col.rgb, 1.0);
             float d0 = Depth(P.xyz);
             float3 n0 = gNrm.Load(int3(c, 0)).xyz;
             float2 hp = (float2(c) + 0.5) * 0.5 - 0.5;

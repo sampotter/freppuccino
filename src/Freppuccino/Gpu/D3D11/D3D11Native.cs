@@ -377,4 +377,11 @@ struct DepthStencilDesc
             return new() { DepthEnable = 0, DepthWriteMask = 0, DepthFunc = 8, StencilEnable = 0, StencilReadMask = 0xff, StencilWriteMask = 0xff, FrontFace = op, BackFace = op };
         }
     }
+
+    public static DepthStencilDesc Test(int func)
+    {
+        var d = Disabled;
+        d.DepthEnable = 1; d.DepthWriteMask = 1; d.DepthFunc = func;
+        return d;
+    }
 }

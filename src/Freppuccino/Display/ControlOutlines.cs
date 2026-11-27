@@ -20,6 +20,7 @@ public static class ControlOutlines
 {
     const SilhouetteType Kinds = SilhouetteType.Projecting | SilhouetteType.TangentProjects | SilhouetteType.Crease | SilhouetteType.Boundary;
     static readonly System.Drawing.Color Unselected = System.Drawing.Color.FromArgb(70, 70, 70);
+    public static int HiddenAlpha { get; set; } = 64;
 
     readonly record struct Key(Guid Obj, uint Serial, string Rel, bool Persp, Point3d Eye, Vector3d Dir);
     static readonly Dictionary<Key, Curve[]> cache = [];
@@ -36,10 +37,11 @@ public static class ControlOutlines
     }
 
     /// <paramref name="selected"/>: false = every unselected instance; true = the selected ones.
-    public static void Draw(DisplayPipeline dp, RhinoDoc doc, bool selected)
+    public static void Draw(DisplayPipeline dp, RhinoDoc doc, bool selected, bool hidden = false)
     {
         var vp = dp.Viewport;
         var color = selected ? Rhino.ApplicationSettings.AppearanceSettings.SelectedObjectColor : Unselected;
+        if (hidden) color = System.Drawing.Color.FromArgb(HiddenAlpha, color);
         int thickness = selected ? 2 : 1;
         // Base instance transforms from the committed tree: FrepScene.Get's tree already carries a dragged root's preview
         // matrix, and the real brep still sits at its committed primary placement. Each preview is applied once below.

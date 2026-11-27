@@ -51,17 +51,22 @@ public sealed class D3D11Backend : IGpuBackend
     bool ctxStateFailed;
     int featureLevel;
     bool initOk;
-    IntPtr postVs, occlusionPs, blurPs, compositePs, pointSampler, linearSampler, postCb;
+    IntPtr postVs, occlusionPs, blurPs, compositePs, pointSampler, linearSampler, postCb, depthDss;
     bool postFailed;
     readonly Target gColor = new(), gPos = new(), gNrm = new(), aoA = new(), aoB = new();
     int targetW, targetH;
+    readonly float[] clip = new float[16];
+
+    public static float DepthBiasPx { get; set; } = 1f;
+    public bool WroteDepth { get; private set; }
 
     public bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, false);
 
-    public bool DrawOccluded(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, Occlusion);
+    public bool DrawOccluded(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms) => Draw(pipeline, program, uniforms, true);
 
     bool Draw(DisplayPipeline pipeline, ShaderSource program, ReadOnlySpan<byte> uniforms, bool occluded)
     {
+        WroteDepth = false;
         if (!OperatingSystem.IsWindows()) return false;
         try { return DrawWin(pipeline, program, uniforms, occluded); }
         catch (Exception ex) { LogOnce("draw:" + ex.GetType().Name, "Freppuccino D3D11: " + ex); return false; }
@@ -91,7 +96,12 @@ public sealed class D3D11Backend : IGpuBackend
         if (ann != IntPtr.Zero) BeginEvent(ann, "Freppuccino");
         try
         {
-            if (swap && occluded && EnsurePost()) DrawOccludedSwapped(ctx, draw);
+            if (swap && occluded && EnsurePost())
+            {
+                var m = pipeline.Viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+                for (int i = 0; i < 16; i++) clip[i] = (float)m[i / 4, i % 4];
+                WroteDepth = DrawOccludedSwapped(ctx, draw, Occlusion);
+            }
             else if (swap) DrawSwapped(ctx, draw);
             else DrawManual(ctx, draw);
         }
@@ -100,6 +110,26 @@ public sealed class D3D11Backend : IGpuBackend
             if (ann != IntPtr.Zero) { EndEvent(ann); SafeRelease(ref ann); }
         }
         return true;
+    }
+
+    public bool ExpectsDepth(DisplayPipeline pipeline)
+    {
+        if (!OperatingSystem.IsWindows() || StateMode == D3D11StateMode.Manual) return false;
+        try
+        {
+            var dev = pipeline.GetDirect3d11Device();
+            var ctx = pipeline.GetDirect3d11DeviceContext();
+            if (dev == IntPtr.Zero || ctx == IntPtr.Zero) return false;
+            if (dev != device) { ReleaseAll(); initOk = Init(dev); }
+            if (!initOk || !EnsureContextState(ctx) || !EnsurePost()) return false;
+            Span<IntPtr> rtvs = stackalloc IntPtr[MaxRenderTargets];
+            OMGetRenderTargets(ctx, rtvs, out var dsv);
+            for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
+            bool has = dsv != IntPtr.Zero;
+            SafeRelease(ref dsv);
+            return has;
+        }
+        catch (Exception ex) { LogOnce("expect:" + ex.GetType().Name, "Freppuccino D3D11: " + ex); return false; }
     }
 
     [SupportedOSPlatform("windows")]
@@ -167,7 +197,7 @@ public sealed class D3D11Backend : IGpuBackend
     }
 
     [SupportedOSPlatform("windows")]
-    void DrawOccludedSwapped(IntPtr ctx, DrawArgs draw)
+    bool DrawOccludedSwapped(IntPtr ctx, DrawArgs draw, bool ao)
     {
         Span<IntPtr> rtvs = stackalloc IntPtr[MaxRenderTargets];
         Span<Viewport> vps = stackalloc Viewport[MaxViewports];
@@ -184,7 +214,7 @@ public sealed class D3D11Backend : IGpuBackend
                 RSSetViewports(ctx, vps[..nvp]);
                 Bind(ctx, draw);
                 D3D11Native.Draw(ctx, draw.VertexCount, 0);
-                return;
+                return false;
             }
             int hw = (w + 1) / 2, hh = (h + 1) / 2;
 
@@ -201,16 +231,24 @@ public sealed class D3D11Backend : IGpuBackend
             PSSetConstantBuffer(ctx, 1, postCb);
             RSSetViewports(ctx, [new Viewport { Width = hw, Height = hh, MaxDepth = 1 }]);
 
-            PostPass(ctx, occlusionPs, aoA.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, IntPtr.Zero], w, h, hw, hh, 0, 0);
-            PostPass(ctx, blurPs, aoB.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, aoA.Srv], w, h, hw, hh, 1, 0);
-            PostPass(ctx, blurPs, aoA.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, aoB.Srv], w, h, hw, hh, 0, 1);
+            if (ao)
+            {
+                PostPass(ctx, occlusionPs, aoA.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, IntPtr.Zero], w, h, hw, hh, 0, 0);
+                PostPass(ctx, blurPs, aoB.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, aoA.Srv], w, h, hw, hh, 1, 0);
+                PostPass(ctx, blurPs, aoA.Rtv, [gPos.Srv, gNrm.Srv, IntPtr.Zero, aoB.Srv], w, h, hw, hh, 0, 1);
+            }
 
             OMSetRenderTargets(ctx, rtvs, dsv);
             RSSetViewports(ctx, vps[..nvp]);
-            SetPost(ctx, w, h, hw, hh, 0, 0, vp.X, vp.Y);
             PSSetShader(ctx, compositePs);
             PSSetShaderResources(ctx, 0, [gPos.Srv, gNrm.Srv, gColor.Srv, aoA.Srv]);
+            OMSetDepthStencilState(ctx, depthDss, 0);
+            SetPost(ctx, w, h, hw, hh, 0, 0, vp.X, vp.Y, 0, ao ? 1 : 0, vp.MinDepth, vp.MaxDepth);
             D3D11Native.Draw(ctx, 3, 0);
+            OMSetDepthStencilState(ctx, dss, 0);
+            SetPost(ctx, w, h, hw, hh, 0, 0, vp.X, vp.Y, 1, 0, vp.MinDepth, vp.MaxDepth);
+            D3D11Native.Draw(ctx, 3, 0);
+            return dsv != IntPtr.Zero;
         }
         finally
         {
@@ -237,9 +275,14 @@ public sealed class D3D11Backend : IGpuBackend
     }
 
     [SupportedOSPlatform("windows")]
-    void SetPost(IntPtr ctx, int w, int h, int hw, int hh, float dx, float dy, float ox, float oy)
+    void SetPost(IntPtr ctx, int w, int h, int hw, int hh, float dx, float dy, float ox, float oy, float band = 0, float ao = 0, float minDepth = 0, float maxDepth = 1)
     {
-        Span<float> v = [w, h, hw, hh, dx, dy, ox, oy];
+        Span<float> v = stackalloc float[32];
+        v.Clear();
+        v[0] = w; v[1] = h; v[2] = hw; v[3] = hh; v[4] = dx; v[5] = dy; v[6] = ox; v[7] = oy;
+        clip.CopyTo(v[8..]);
+        v[24] = minDepth; v[25] = maxDepth;
+        v[28] = band; v[29] = ao; v[30] = DepthBiasPx;
         UpdateSubresource(ctx, postCb, System.Runtime.InteropServices.MemoryMarshal.AsBytes(v));
     }
 
@@ -257,7 +300,8 @@ public sealed class D3D11Backend : IGpuBackend
             Check(CreatePixelShader(device, D3D11Native.Compile(OcclusionShaders.Composite, "main", "ps_5_0", "freppuccino_composite.hlsl"), out compositePs), "CreatePixelShader");
             Check(CreateSamplerState(device, SamplerDesc.Clamp(false), out pointSampler), "CreateSamplerState");
             Check(CreateSamplerState(device, SamplerDesc.Clamp(true), out linearSampler), "CreateSamplerState");
-            Check(CreateBuffer(device, new BufferDesc { ByteWidth = 32, Usage = USAGE_DEFAULT, BindFlags = BIND_CONSTANT_BUFFER }, out postCb), "CreateBuffer");
+            Check(CreateBuffer(device, new BufferDesc { ByteWidth = 128, Usage = USAGE_DEFAULT, BindFlags = BIND_CONSTANT_BUFFER }, out postCb), "CreateBuffer");
+            Check(CreateDepthStencilState(device, DepthStencilDesc.Test(4), out depthDss), "CreateDepthStencilState");
             postFailed = false;
             return true;
         }
@@ -313,7 +357,7 @@ public sealed class D3D11Backend : IGpuBackend
     {
         if (!OperatingSystem.IsWindows()) return;
         SafeRelease(ref postVs); SafeRelease(ref occlusionPs); SafeRelease(ref blurPs); SafeRelease(ref compositePs);
-        SafeRelease(ref pointSampler); SafeRelease(ref linearSampler); SafeRelease(ref postCb);
+        SafeRelease(ref pointSampler); SafeRelease(ref linearSampler); SafeRelease(ref postCb); SafeRelease(ref depthDss);
     }
 
     [SupportedOSPlatform("windows")]
