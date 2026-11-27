@@ -60,6 +60,8 @@ public sealed class D3D11Backend : IGpuBackend
     public static float DepthBiasPx { get; set; } = 0f;
     public bool WroteDepth { get; private set; }
     float traceMinDepth, traceMaxDepth = 1;
+    int traceSerial;
+    public (Guid Viewport, int Serial, int W, int H) TraceSource { get; private set; }
 
     [SupportedOSPlatform("windows")]
     public unsafe (float W, double Depth)[]? TraceFrepDepth(IntPtr dev, IntPtr ctx, (int X, int Y)[] px)
@@ -139,6 +141,7 @@ public sealed class D3D11Backend : IGpuBackend
                 var m = pipeline.Viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
                 for (int i = 0; i < 16; i++) clip[i] = (float)m[i / 4, i % 4];
                 WroteDepth = DrawOccludedSwapped(ctx, draw, Occlusion);
+                if (targetW > 0) TraceSource = (pipeline.Viewport?.Id ?? Guid.Empty, ++traceSerial, targetW, targetH);
             }
             else if (swap) DrawSwapped(ctx, draw);
             else DrawManual(ctx, draw);

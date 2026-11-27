@@ -11,7 +11,7 @@ public static unsafe class DepthTrace
 {
     const int Frames = 30;
     static Guid? viewport;
-    static int frame;
+    static int frame, frameSerial = -1;
     static StringBuilder? log;
     static IntPtr device, ctxState, vs, psMs, ps1;
 
@@ -78,7 +78,7 @@ public static unsafe class DepthTrace
             dssObj = OMGetDepthStencilState(ctx, out _);
             int* dssd = stackalloc int[13];
             if (dssObj != IntPtr.Zero) ((delegate* unmanaged<IntPtr, int*, void>)V(dssObj)[7])(dssObj, dssd);
-            sb.Append($" dss enable {dssd[0]} write {dssd[1]} func {dssd[2]}");
+            sb.Append(dssObj == IntPtr.Zero ? " dss default" : $" dss enable {dssd[0]} write {dssd[1]} func {dssd[2]}");
             Span<Viewport> vps = stackalloc Viewport[16];
             int nvp = RSGetViewports(ctx, vps);
             if (nvp > 0) sb.Append($" vp0 {vps[0].X},{vps[0].Y} {vps[0].Width}x{vps[0].Height} z {vps[0].MinDepth}..{vps[0].MaxDepth}");
@@ -92,8 +92,14 @@ public static unsafe class DepthTrace
             int w = nvp > 0 ? (int)vps[0].Width : (int)td[0], h = nvp > 0 ? (int)vps[0].Height : (int)td[1];
             int ox = nvp > 0 ? (int)vps[0].X : 0, oy = nvp > 0 ? (int)vps[0].Y : 0;
             var grid = Enumerable.Range(0, 64).Select(i => (X: (int)(w * (0.1 + 0.8 * (i % 8) / 7.0)), Y: (int)(h * (0.1 + 0.8 * (i / 8) / 7.0)))).ToArray();
-            var scan = backend?.TraceFrepDepth(dev, ctx, grid);
-            var hits = scan == null ? [] : Enumerable.Range(0, scan.Length).Where(i => scan[i].W > 0).ToList();
+            var source = backend?.TraceSource ?? default;
+            bool here = backend != null && source.Viewport == vp?.Id;
+            if (stage is "pre-after-early" or "post-after-fallback") frameSerial = here ? source.Serial : -1;
+            if (stage == "post-entry-no-pre") frameSerial = -1;
+            bool current = here && source.Serial == frameSerial;
+            sb.Append($" gpos {(backend == null ? "none" : $"vp {source.Viewport.ToString()[..8]} draw {source.Serial} {source.W}x{source.H}")} {(current ? "current" : "stale")}");
+            var scan = current ? backend!.TraceFrepDepth(dev, ctx, grid) : null;
+            var hits = scan == null ? [] : Enumerable.Range(0, scan.Length).Where(i => scan[i].W > 0 || scan[i].W == -1).ToList();
             var pick = hits.Count >= 5 ? Enumerable.Range(0, 5).Select(k => hits[k * (hits.Count - 1) / 4]).ToList() : hits.Concat(Enumerable.Range(0, 64).Where(i => !hits.Contains(i))).Take(5).ToList();
             var px = pick.Select(i => (X: ox + grid[i].X, Y: oy + grid[i].Y)).ToArray();
             var frep = scan == null ? null : pick.Select(i => scan[i]).ToArray();
@@ -104,7 +110,8 @@ public static unsafe class DepthTrace
             for (int i = 0; i < px.Length; i++)
             {
                 sb.Append($" | p{i} ({px[i].X},{px[i].Y})");
-                if (frep != null) sb.Append($" frep {(frep[i].W > 0 ? frep[i].Depth.ToString("0.000000") : "w=" + frep[i].W)}");
+                if (frep != null) sb.Append($" frep {(frep[i].W > 0 || frep[i].W == -1 ? frep[i].Depth.ToString("0.000000") + (frep[i].W == -1 ? " zebra" : "") : "w=" + frep[i].W)}");
+                else sb.Append(" frep unavailable");
                 if (buffer != null) sb.Append(" buf " + string.Join("/", buffer[i].Select(d => d.ToString("0.000000"))));
             }
             return sb.ToString();
