@@ -36,6 +36,7 @@ public sealed class UiController : IDisposable
     /// Replace the panel selection with one operation node and show the gumball on its leaves.
     public static void SelectNode(RhinoDoc doc, int id)
     {
+        using var scope = Selection.FrepSelection.Explicit();
         doc.Objects.UnselectAll();
         ClearNodes(doc);
         NodesOf(doc).Add(id);
@@ -439,7 +440,7 @@ public sealed class UiController : IDisposable
                     OnShaderBuilds();
                     break;
                 case "select":
-                    Select(doc, Parse<SelectRequest>(message));
+                    using (Selection.FrepSelection.Explicit()) Select(doc, Parse<SelectRequest>(message));
                     break;
                 case "setVisible":
                     SetVisible(doc, Parse<SetVisibleRequest>(message));
@@ -653,7 +654,11 @@ public sealed class UiController : IDisposable
             bool selected = obj.IsSelected(false) != 0;
             bool ok = doc.Objects.ModifyAttributes(obj, attrs, true) && doc.Objects.Replace(obj.Id, brep);
             if (!ok) brep.Dispose();
-            else if (selected) doc.Objects.Select(obj.Id);
+            else if (selected)
+            {
+                using var scope = Selection.FrepSelection.Explicit();
+                doc.Objects.Select(obj.Id);
+            }
         }
         finally
         {

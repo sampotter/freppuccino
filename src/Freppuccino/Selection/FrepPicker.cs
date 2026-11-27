@@ -80,16 +80,18 @@ public sealed class FrepPicker : MouseCallback
                 ambiguous = false;
                 note = $"Freppuccino: selected {Label(doc, leaf)}, {i + 1} of {shared.Count} shapes sharing that outline. Shift+click again for the next.";
             }
+            if (leaf == null && !ambiguous && PickRoot(doc, vp, client) == null && HiddenCutterOver(view, e.ViewportPoint, out var hiddenReal))
+            {
+                e.Cancel = true;
+                pending = new Pending(doc, null, null, false, Native: hiddenReal, Add: true);
+                return;
+            }
             if (leaf == null && !ambiguous)
             {
                 if (rhino && PickRoot(doc, vp, client) == null) return;
                 leaf = PickInstance(doc, vp, client, out ambiguous);
             }
-            if (leaf == null && !ambiguous)
-            {
-                if (!rhino && HiddenCutterUnder(view, e.ViewportPoint)) e.Cancel = true;
-                return;
-            }
+            if (leaf == null && !ambiguous) return;
             e.Cancel = true;
             pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false, note);
             return;
@@ -110,10 +112,10 @@ public sealed class FrepPicker : MouseCallback
         }
         if (hit is not { } root)
         {
-            if (!rhino && HiddenCutterUnder(view, e.ViewportPoint))
+            if (sessions == 0 && HiddenCutterOver(view, e.ViewportPoint, out var real))
             {
                 e.Cancel = true;
-                if (sessions == 0) pending = new Pending(doc, null, null, false, Clear: true);
+                pending = new Pending(doc, null, null, false, Native: real);
                 return;
             }
             // Rhino deselects its own objects on an empty click, but node roots aren't Rhino objects. (Not in a session:
@@ -125,7 +127,7 @@ public sealed class FrepPicker : MouseCallback
         pending = new Pending(doc, root, null, false);
     }
 
-    sealed record Pending(RhinoDoc Doc, FrepOperand? Root, FrepInstance? Leaf, bool Ambiguous, string? Note = null, bool Clear = false);
+    sealed record Pending(RhinoDoc Doc, FrepOperand? Root, FrepInstance? Leaf, bool Ambiguous, string? Note = null, Guid? Native = null, bool Add = false);
     Pending? pending;
     static (Point2d At, List<FrepInstance> Set, int Index)? cycle;
 
@@ -137,10 +139,15 @@ public sealed class FrepPicker : MouseCallback
         if (pending is not { } p || e.MouseButton != MouseButton.Left) return;
         pending = null;
         e.Cancel = true;
-        if (p.Clear)
+        if (p.Native is { } id)
         {
-            p.Doc.Objects.UnselectAll();
-            UiController_ClearNodes(p.Doc);
+            // A click on an object behind a hidden cutter: as Rhino's own click with that cutter left out.
+            if (!p.Add)
+            {
+                p.Doc.Objects.UnselectAll();
+                UiController_ClearNodes(p.Doc);
+            }
+            p.Doc.Objects.Select(id, true, true);
             p.Doc.Views.Redraw();
             return;
         }
@@ -309,14 +316,26 @@ public sealed class FrepPicker : MouseCallback
             !ControlOutlines.IsControl(o) && !Commands.FrepMeshCommand.IsBaked(o));
     }
 
-    static bool HiddenCutterUnder(RhinoView view, System.Drawing.Point at)
+    /// A hidden cutter's brep under the cursor together with exactly one ordinary Rhino object, <paramref name="real"/>,
+    /// which Rhino's own pick could pass over for the cutter: the click selects that object instead.
+    static bool HiddenCutterOver(RhinoView view, System.Drawing.Point at, out Guid real)
     {
+        real = Guid.Empty;
         if (FrepDisplaySettings.Cutters != CutterDisplay.Hidden) return false;
         using var pick = new Rhino.Input.Custom.PickContext { View = view, PickStyle = Rhino.Input.Custom.PickStyle.PointPick };
         pick.SetPickTransform(view.ActiveViewport.GetPickTransform(at));
         pick.UpdateClippingPlanes();
         var cutters = ControlOutlines.CutterObjects(view.Document);
-        return view.Document.Objects.PickObjects(pick).Any(r => r.Object() is { } o && cutters.Contains(o.Id));
+        var hits = view.Document.Objects.PickObjects(pick);
+        if (!hits.Any(r => r.Object() is { } o && cutters.Contains(o.Id))) return false;
+        var vp = view.ActiveViewport;
+        var ordinary = hits.Where(r => r.Object() is { } o && o is not FrepCarrier && !ControlOutlines.IsControl(o) && !Commands.FrepMeshCommand.IsBaked(o))
+            .Select(r => r.ObjectId).Distinct().ToList();
+        // Several ordinary objects: Rhino's own pick and its selection menu decide; the hidden cutter is dropped after.
+        // Only cutters there: Rhino's own click or drag runs, and the selection rule drops the cutter.
+        if (ordinary.Count != 1) return false;
+        real = ordinary[0];
+        return true;
     }
 
     static void UiController_ClearNodes(RhinoDoc doc) => Ui.UiController.SetSelectedNodes(doc, []);
