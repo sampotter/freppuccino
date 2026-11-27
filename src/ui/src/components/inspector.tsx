@@ -1,4 +1,4 @@
-import { ArrowUpDown, Trash2, Ungroup } from 'lucide-react'
+import { Trash2, Ungroup } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -234,7 +234,6 @@ function NodeActions(props: { id: Id }) {
 function CombineSection(props: { operands: SceneNode[]; labels: Map<string, string>; existing?: SceneNode }) {
   const { labels, existing } = props
   const units = useHost((s) => s.settings.units)
-  const [swapped, setSwapped] = useState(false)
   const [op, setOp] = useState<OperationKind>('union')
   const [k, setK] = useState(existing?.k ?? 5)
 
@@ -289,10 +288,7 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
     }
   }, [id])
 
-  // Swapping only makes sense for two new operands; otherwise pick order decides the base.
-  const canSwap = !existing && props.operands.length === 2
-  const operands = canSwap && swapped ? [...props.operands].reverse() : props.operands
-  const role = (i: number) => (op === 'subtract' ? (i === 0 ? 'Base' : 'Subtract') : `#${i + 1}`)
+  const operands = props.operands
   const preset = existing ? presetOf(existing) : op
   const doc = useHost((s) => s.doc)
   const maxKey = existing ? `${doc}/${existing.id}` : ''
@@ -308,20 +304,6 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
       badge={existing ? 'Group' : `${operands.length} operands`}
       icon={existing ? <NodeIcon node={existing} className="size-6" /> : <BrandIcon name={OPERATIONS[op].icon} className="size-6" />}
     >
-      {!existing && (
-        <div className="flex items-center gap-1">
-          <div className="grid min-w-0 flex-1 gap-1">
-            {operands.map((o, i) => (
-              <Operand key={`${i}:${o.id}`} node={o} label={labels.get(o.id)} role={role(i)} />
-            ))}
-          </div>
-          {canSwap && (
-            <Button variant="ghost" size="icon-xs" aria-label="Swap" onClick={() => setSwapped((s) => !s)}>
-              <ArrowUpDown />
-            </Button>
-          )}
-        </div>
-      )}
 
       <ToggleGroup
         type="single"
@@ -407,10 +389,8 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string> }) 
     }
   }, [node.id])
 
-  const child = node.children?.[0]
   return (
     <Section title={labels.get(node.id) ?? ''} badge={typeLabel(node)} icon={<NodeIcon node={node} className="size-6" />}>
-      {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
       {node.refMissing && (
         <p className="type-small text-muted-foreground">{node.op === 'repeat' ? 'Box' : 'Axis line'} deleted; drawn unwarped.</p>
       )}
@@ -440,10 +420,8 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string> }) 
 /** Blend node above a Repeat. The slider is the same one a union uses; it fillets every copy. */
 function BlendSection(props: { node: SceneNode; labels: Map<string, string> }) {
   const { node, labels } = props
-  const child = node.children?.[0]
   return (
     <Section title={labels.get(node.id) ?? ''} badge="Blend" icon={<BrandIcon name="blend" className="size-6" />}>
-      {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
       <BlendSlider id={node.id} k={node.k ?? 0} />
       <NodeActions id={node.id} />
     </Section>
@@ -512,10 +490,8 @@ function BlendSlider(props: { id: Id; k: number }) {
 /** Offset node above a union, intersection, or difference. Positive distance grows the solid. */
 function OffsetSection(props: { node: SceneNode; labels: Map<string, string> }) {
   const { node, labels } = props
-  const child = node.children?.[0]
   return (
     <Section title={labels.get(node.id) ?? ''} badge="Offset" icon={<BrandIcon name="offset" className="size-6" />}>
-      {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
       <OffsetSlider id={node.id} k={node.k ?? 0} />
       <NodeActions id={node.id} />
     </Section>
@@ -616,14 +592,3 @@ function userParamRange(d: number): { min: number; max: number; step: number } {
 /** Live blend previews: at most one per this many ms (~30 Hz); the final value always follows on release. */
 const PREVIEW_MS = 33
 
-function Operand(props: { node: SceneNode; label?: string; role: string }) {
-  return (
-    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-input bg-card px-2 py-1.5">
-      <NodeIcon node={props.node} className="size-5" />
-      <div className="grid min-w-0">
-        <span className="type-label text-muted-foreground">{props.role}</span>
-        <span className="truncate font-bold">{props.label}</span>
-      </div>
-    </div>
-  )
-}
