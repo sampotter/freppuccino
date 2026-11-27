@@ -20,7 +20,8 @@ public sealed class ShaderConduit : DisplayConduit
     const int TitleClearance = 28;
     bool loggedFailure, loggedCap;
     Guid? early;
-    bool earlyWroteDepth;
+    bool earlyWroteDepth, earlyOwnOutlines;
+    int earlySerial = -1;
 
     static readonly Eto.Forms.UITimer spin = new() { Interval = 1.0 / 12 };
 
@@ -76,13 +77,20 @@ public sealed class ShaderConduit : DisplayConduit
         var dp = e.Display;
         early = null;
         earlyWroteDepth = false;
+        earlyOwnOutlines = false;
+        earlySerial = -1;
         if (!FreppuccinoDisplayMode.IsActive(dp)) return;
         TraceBegin(dp);
         try
         {
             if (GpuBackends.For(dp) is not { } gpu || !WritesDepth(gpu, dp)) return;
-            var wrote = DrawModel(gpu, dp, e.RhinoDoc, cutters: false, depth: true).WroteDepth;
+            bool own = OwnOutlinesPossible(gpu, dp);
+            int before = GBufferSerial(gpu);
+            var wrote = DrawModel(gpu, dp, e.RhinoDoc, cutters: own ? false : null, depth: true).WroteDepth;
+            int after = GBufferSerial(gpu);
             earlyWroteDepth = wrote;
+            earlyOwnOutlines = own;
+            earlySerial = after > before ? after : -1;
             early = dp.Viewport?.Id;
             Trace(dp, "pre-after-early", early, wrote, frame: true);
         }
@@ -114,7 +122,8 @@ public sealed class ShaderConduit : DisplayConduit
     protected override void PostDrawObjects(DrawEventArgs e)
     {
         var dp = e.Display;
-        bool late = early != null && early == dp.Viewport?.Id, wroteDepth = late && earlyWroteDepth;
+        bool late = early != null && early == dp.Viewport?.Id, wroteDepth = late && earlyWroteDepth, own = late && earlyOwnOutlines;
+        int serial = late ? earlySerial : -1;
         Trace(dp, late ? "post-entry" : "post-entry-no-pre", early, wroteDepth, frame: !late);
         early = null;
         if (!FreppuccinoDisplayMode.IsActive(dp)) return;
@@ -125,7 +134,7 @@ public sealed class ShaderConduit : DisplayConduit
             if (!late) TraceBegin(dp);
             bool drew = !late && DrawModel(gpu, dp, e.RhinoDoc, null, depth: false).Drew;
             if (!late) Trace(dp, "post-after-fallback", null, false);
-            if (!AiCapture.Active && late) DrawDepthTestedOutlines(dp, e.RhinoDoc, wroteDepth);
+            if (!AiCapture.Active && own) DrawOwnOutlines(gpu, dp, e.RhinoDoc, serial, wroteDepth);
 
             if (!AiCapture.Active) // AI screenshots: just the model
             {
@@ -164,6 +173,23 @@ public sealed class ShaderConduit : DisplayConduit
 
     static bool DrewDepth(IGpuBackend gpu) => gpu is Gpu.D3D11.D3D11Backend { WroteDepth: true };
 
+    public static bool OwnOutlines { get; set; } = true;
+    public static double OutlinePullPx { get; set; } = 0.0;
+
+    static bool OwnOutlinesPossible(IGpuBackend gpu, DisplayPipeline dp) => OwnOutlines && gpu is Gpu.D3D11.D3D11Backend d3d && d3d.OutlinesPossible(dp);
+
+    static int GBufferSerial(IGpuBackend gpu) => gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.GBufferSerial : 0;
+
+    static void DrawOwnOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, int serial, bool wroteDepth)
+    {
+        if (Gpu.D3D11.DepthTrace.Armed(dp)) Gpu.D3D11.DepthTrace.Reference(dp, gpu as Gpu.D3D11.D3D11Backend);
+        Trace(dp, "post-before-outlines", null, wroteDepth);
+        if (gpu is not Gpu.D3D11.D3D11Backend d3d || serial < 0 || !wroteDepth) return;
+        var endpoints = ControlOutlines.Segments(dp, doc, cutters: true);
+        d3d.DrawOutlines(dp, serial, endpoints, ControlOutlines.UnselectedColor, ControlOutlines.HiddenAlpha / 255f, (float)(0.5 * Math.Ceiling(dp.DpiScale - 1e-3)), (float)OutlinePullPx);
+        Trace(dp, "post-after-outlines", null, wroteDepth);
+    }
+
     static void TraceBegin(DisplayPipeline dp) => Gpu.D3D11.DepthTrace.Begin(dp, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend);
 
     static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false)
@@ -173,34 +199,15 @@ public sealed class ShaderConduit : DisplayConduit
         Gpu.D3D11.DepthTrace.Sample(dp, stage, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend, early, wrote);
     }
 
-    static void DrawDepthTestedOutlines(DisplayPipeline dp, RhinoDoc doc, bool wroteDepth)
-    {
-        if (Gpu.D3D11.DepthTrace.Armed(dp)) Gpu.D3D11.DepthTrace.Reference(dp, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend);
-        Trace(dp, "post-before-faint", null, wroteDepth);
-        if (wroteDepth)
-        {
-            dp.PushDepthTesting(false);
-            dp.PushDepthWriting(false);
-            try
-            {
-                ControlOutlines.Draw(dp, doc, selected: false, cutters: true, hidden: true);
-                dp.Flush();
-            }
-            finally
-            {
-                dp.PopDepthWriting();
-                dp.PopDepthTesting();
-            }
-        }
-        Trace(dp, "post-before-solid", null, wroteDepth);
-        ControlOutlines.Draw(dp, doc, selected: false, cutters: true);
-        dp.Flush();
-        Trace(dp, "post-after-solid", null, wroteDepth);
-    }
-
     static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms, bool depth) =>
         gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.DrawOccluded(dp, program, uniforms, depth) : gpu.Draw(dp, program, uniforms);
 #else
+    static bool OwnOutlinesPossible(IGpuBackend gpu, DisplayPipeline dp) => false;
+
+    static int GBufferSerial(IGpuBackend gpu) => 0;
+
+    static void DrawOwnOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, int serial, bool wroteDepth) { }
+
     static void TraceBegin(DisplayPipeline dp) { }
 
     static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false) { }
@@ -208,8 +215,6 @@ public sealed class ShaderConduit : DisplayConduit
     static bool WritesDepth(IGpuBackend gpu, DisplayPipeline dp) => false;
 
     static bool DrewDepth(IGpuBackend gpu) => false;
-
-    static void DrawDepthTestedOutlines(DisplayPipeline dp, RhinoDoc doc, bool wroteDepth) { }
 
     static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms, bool depth) =>
         gpu.Draw(dp, program, uniforms);

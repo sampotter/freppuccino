@@ -20,6 +20,7 @@ public static class ControlOutlines
 {
     const SilhouetteType Kinds = SilhouetteType.Projecting | SilhouetteType.TangentProjects | SilhouetteType.Crease | SilhouetteType.Boundary;
     static readonly System.Drawing.Color Unselected = System.Drawing.Color.FromArgb(70, 70, 70);
+    public static System.Drawing.Color UnselectedColor => Unselected;
     public static int HiddenAlpha { get; set; } = 64;
 
     readonly record struct Key(Guid Obj, uint Serial, string Rel, bool Persp, Point3d Eye, Vector3d Dir);
@@ -149,7 +150,39 @@ public static class ControlOutlines
 
     static void Draw(DisplayPipeline dp, RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc, System.Drawing.Color color, int thickness)
     {
+        if (sink != null) { sink.AddRange(Outline(o, rel, vp, doc)); return; }
         foreach (var c in Outline(o, rel, vp, doc)) dp.DrawCurve(c, color, thickness);
+    }
+
+    static List<Curve>? sink;
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Curve, float[]> segments = new();
+
+    public static float[] Segments(DisplayPipeline dp, RhinoDoc doc, bool cutters)
+    {
+        sink = [];
+        try { Draw(dp, doc, selected: false, cutters: cutters); }
+        finally { var got = sink; sink = null; collected = got; }
+        var parts = collected.Select(c => segments.GetValue(c, Endpoints)).ToList();
+        var all = new float[parts.Sum(p => p.Length)];
+        int at = 0;
+        foreach (var p in parts) { p.CopyTo(all, at); at += p.Length; }
+        return all;
+    }
+
+    static List<Curve> collected = [];
+
+    static float[] Endpoints(Curve c)
+    {
+        Point3d[] pts = c.TryGetPolyline(out var pl) ? [.. pl]
+            : c.ToPolyline(0, 0, Math.PI / 90, 0, 0, 0, 0, 0, true)?.ToPolyline() is { } q ? [.. q] : [];
+        var r = new float[Math.Max(0, pts.Length - 1) * 8];
+        for (int i = 0; i + 1 < pts.Length; i++)
+        {
+            var a = pts[i]; var b = pts[i + 1];
+            r[i * 8] = (float)a.X; r[i * 8 + 1] = (float)a.Y; r[i * 8 + 2] = (float)a.Z; r[i * 8 + 3] = 1;
+            r[i * 8 + 4] = (float)b.X; r[i * 8 + 5] = (float)b.Y; r[i * 8 + 6] = (float)b.Z; r[i * 8 + 7] = 1;
+        }
+        return r;
     }
 
     static Curve[] Outline(RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc)

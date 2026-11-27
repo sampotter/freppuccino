@@ -155,6 +155,17 @@ static unsafe class D3D11Native
         rs = hr < 0 ? IntPtr.Zero : r; return hr;
     }
 
+    public static int CreateBlendState(IntPtr dev, in BlendDesc d, out IntPtr bs)
+    {
+        IntPtr r = IntPtr.Zero;
+        int hr;
+        fixed (BlendDesc* p = &d) hr = ((delegate* unmanaged<IntPtr, BlendDesc*, IntPtr*, int>)Vt(dev)[20])(dev, p, &r);
+        bs = r;
+        return hr;
+    }
+
+    public static void VSSetShaderResource(IntPtr c, uint slot, IntPtr view) => ((delegate* unmanaged<IntPtr, uint, uint, IntPtr*, void>)Vt(c)[25])(c, slot, 1, &view);
+
     public static int CreateDepthStencilState(IntPtr dev, in DepthStencilDesc d, out IntPtr dss)
     {
         IntPtr r; int hr;
@@ -312,6 +323,33 @@ static unsafe class D3D11Native
     }
 
     static string BlobString(IntPtr blob) => blob == IntPtr.Zero ? "" : System.Text.Encoding.UTF8.GetString(BlobBytes(blob)).TrimEnd('\0', '\n');
+}
+
+[StructLayout(LayoutKind.Sequential)]
+unsafe struct BlendDesc
+{
+    public int AlphaToCoverageEnable, IndependentBlendEnable;
+    public fixed int RenderTarget[64];
+
+    public static BlendDesc Alpha
+    {
+        get
+        {
+            var d = new BlendDesc();
+            for (int i = 0; i < 8; i++)
+            {
+                d.RenderTarget[i * 8 + 0] = i == 0 ? 1 : 0;
+                d.RenderTarget[i * 8 + 1] = 5;
+                d.RenderTarget[i * 8 + 2] = 6;
+                d.RenderTarget[i * 8 + 3] = 1;
+                d.RenderTarget[i * 8 + 4] = 2;
+                d.RenderTarget[i * 8 + 5] = 6;
+                d.RenderTarget[i * 8 + 6] = 1;
+                d.RenderTarget[i * 8 + 7] = 0xf;
+            }
+            return d;
+        }
+    }
 }
 
 [StructLayout(LayoutKind.Sequential)]

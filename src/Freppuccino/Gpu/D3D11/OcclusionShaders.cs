@@ -19,7 +19,7 @@ static class OcclusionShaders
         static const float BLUR_NORMAL_FLOOR = 0.25;
 
         cbuffer Frame : register(b0) { float4 camPos, camX, camY, camZ, frustum, params, bound; };
-        cbuffer Post : register(b1) { float4 size; float4 dir; float4 clipX, clipY, clipZ, clipW; float4 depth; float4 mode; };
+        cbuffer Post : register(b1) { float4 size; float4 dir; float4 clipX, clipY, clipZ, clipW; float4 depth; float4 mode; float4 ink; };
         Texture2D<float4> gPos : register(t0);
         Texture2D<float4> gNrm : register(t1);
         Texture2D<float4> gColor : register(t2);
@@ -115,6 +115,79 @@ static class OcclusionShaders
             return wsum > 0.0 ? sum / wsum : a0;
         }
         """;
+
+    public const string OutlineVertex = Common + """
+
+        StructuredBuffer<float4> segs : register(t4);
+        struct V { float4 pos : SV_Position; float3 world : WORLD; float side : SIDE; };
+
+        float4 Clip(float3 p) { float4 q = float4(p, 1.0); return float4(dot(clipX, q), dot(clipY, q), dot(clipZ, q), dot(clipW, q)); }
+
+        V main(uint id : SV_VertexID)
+        {
+            uint s = id / 6, c = id % 6;
+            float3 a = segs[s * 2].xyz, b = segs[s * 2 + 1].xyz;
+            bool atB = c == 1 || c == 2 || c == 4;
+            float sd = (c == 2 || c == 4 || c == 5) ? 1.0 : -1.0;
+            float4 ca = Clip(a), cb = Clip(b);
+            V o;
+            o.world = atB ? b : a;
+            o.side = sd * (mode.y + 1.0);
+            if (ca.w <= 1e-6 || cb.w <= 1e-6) { o.pos = float4(0.0, 0.0, 2.0, 1.0); return o; }
+            float2 half2 = size.xy * 0.5;
+            float2 d = (cb.xy / cb.w - ca.xy / ca.w) * half2;
+            float len = max(length(d), 1e-6);
+            float2 t = d / len, n = float2(-t.y, t.x);
+            float4 cp = atB ? cb : ca;
+            float2 off = n * sd * (mode.y + 1.0) / half2;
+            o.pos = float4(cp.xy + off * cp.w, 0.5 * cp.w, cp.w);
+            return o;
+        }
+        """;
+
+    const string OutlineBody = """
+
+        StructuredBuffer<float4> segs : register(t4);
+        struct V { float4 pos : SV_Position; float3 world : WORLD; float side : SIDE; };
+
+        float DepthOf(float3 p)
+        {
+            float4 q = float4(p, 1.0);
+            return lerp(depth.x, depth.y, saturate(0.5 - 0.5 * dot(clipZ, q) / dot(clipW, q)));
+        }
+
+        float4 main(V i) : SV_Target
+        {
+            float cov = saturate(mode.y + 0.5 - abs(i.side));
+            if (cov <= 0.0) discard;
+            int2 px = int2(i.pos.xy);
+            int2 c = int2(i.pos.xy - dir.zw);
+            float3 p = i.world;
+            float3 v = p - camPos.xyz;
+            bool persp = camPos.w > 0.5;
+            float foot = (frustum.y - frustum.x) / size.x * (persp ? dot(v, camZ.xyz) / camZ.w : 1.0);
+            p -= (persp ? normalize(v) : camZ.xyz) * mode.x * foot;
+            float lineD = DepthOf(p);
+            float4 P = gPos.Load(int3(c, 0));
+            float frepD = (P.w > 0.0 || P.w == -1.0) ? DepthOf(P.xyz) : 2.0;
+            float rhinoD = RhinoDepth(px);
+            if (rhinoD < lineD - depth.z && rhinoD < frepD - depth.z) discard;
+            float a = frepD < lineD ? mode.z : 1.0;
+            return float4(ink.rgb, a * cov);
+        }
+        """;
+
+    public const string OutlinePixelMs = Common + """
+
+        Texture2DMS<float> rhinoDepth : register(t5);
+        float RhinoDepth(int2 px) { return rhinoDepth.Load(px, 0); }
+        """ + OutlineBody;
+
+    public const string OutlinePixel1 = Common + """
+
+        Texture2D<float> rhinoDepth : register(t5);
+        float RhinoDepth(int2 px) { return rhinoDepth.Load(int3(px, 0)); }
+        """ + OutlineBody;
 
     public const string Composite = Common + """
 

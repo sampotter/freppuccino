@@ -52,6 +52,11 @@ public sealed class D3D11Backend : IGpuBackend
     int featureLevel;
     bool initOk;
     IntPtr postVs, occlusionPs, blurPs, compositePs, pointSampler, linearSampler, postCb, depthDss;
+    IntPtr outlineVs, outlinePsMs, outlinePs1, alphaBlend;
+    bool outlineFailed;
+    byte[]? outlineUniforms;
+
+    public int GBufferSerial => TraceSource.Serial;
     bool postFailed;
     readonly Target gColor = new(), gPos = new(), gNrm = new(), aoA = new(), aoB = new();
     int targetW, targetH;
@@ -146,6 +151,7 @@ public sealed class D3D11Backend : IGpuBackend
                 TraceDraw = (m, fn, ff);
                 gbufferDrawn = false;
                 WroteDepth = DrawOccludedSwapped(ctx, draw, Occlusion);
+                if (gbufferDrawn) outlineUniforms = draw.Uniforms;
                 if (gbufferDrawn) TraceSource = (pipeline.Viewport?.Id ?? Guid.Empty, ++traceSerial, targetW, targetH);
             }
             else if (swap) DrawSwapped(ctx, draw);
@@ -328,13 +334,158 @@ public sealed class D3D11Backend : IGpuBackend
     [SupportedOSPlatform("windows")]
     void SetPost(IntPtr ctx, int w, int h, int hw, int hh, float dx, float dy, float ox, float oy, float band = 0, float ao = 0, float minDepth = 0, float maxDepth = 1)
     {
-        Span<float> v = stackalloc float[32];
+        Span<float> v = stackalloc float[36];
         v.Clear();
         v[0] = w; v[1] = h; v[2] = hw; v[3] = hh; v[4] = dx; v[5] = dy; v[6] = ox; v[7] = oy;
         clip.CopyTo(v[8..]);
         v[24] = minDepth; v[25] = maxDepth;
         v[28] = band; v[29] = ao; v[30] = DepthBiasPx;
         UpdateSubresource(ctx, postCb, System.Runtime.InteropServices.MemoryMarshal.AsBytes(v));
+    }
+
+    public bool DrawOutlines(DisplayPipeline pipeline, int serial, float[] endpoints, System.Drawing.Color ink, float faint, float halfWidth, float pullPx)
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        if (endpoints.Length < 8) return true;
+        try { return DrawOutlinesWin(pipeline, serial, endpoints, ink, faint, halfWidth, pullPx); }
+        catch (Exception ex) { LogOnce("outlines:" + ex.GetType().Name, "Freppuccino D3D11: outline pass failed: " + ex.Message); return false; }
+    }
+
+    public unsafe bool OutlinesPossible(DisplayPipeline pipeline)
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            var dev = pipeline.GetDirect3d11Device();
+            var ctx = pipeline.GetDirect3d11DeviceContext();
+            if (dev == IntPtr.Zero || dev != device || !initOk || ctxState == IntPtr.Zero || !EnsurePost() || !EnsureOutline()) return false;
+            Span<IntPtr> rtvs = stackalloc IntPtr[MaxRenderTargets];
+            OMGetRenderTargets(ctx, rtvs, out var dsv);
+            IntPtr res = IntPtr.Zero;
+            try
+            {
+                if (dsv == IntPtr.Zero || rtvs[0] == IntPtr.Zero) return false;
+                ((delegate* unmanaged<IntPtr, IntPtr*, void>)(*(void***)dsv)[7])(dsv, &res);
+                Texture2DDesc td;
+                ((delegate* unmanaged<IntPtr, Texture2DDesc*, void>)(*(void***)res)[10])(res, &td);
+                return DepthSrvFormat(td.Format) >= 0 && (td.BindFlags & BIND_SHADER_RESOURCE) != 0 && td.SampleCount <= 8;
+            }
+            finally
+            {
+                for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
+                SafeRelease(ref res); SafeRelease(ref dsv);
+            }
+        }
+        catch (Exception ex) { LogOnce("outlinesPossible:" + ex.GetType().Name, "Freppuccino D3D11: " + ex.Message); return false; }
+    }
+
+    [SupportedOSPlatform("windows")]
+    bool EnsureOutline()
+    {
+        if (outlineVs != IntPtr.Zero) return true;
+        if (outlineFailed) return false;
+        outlineFailed = true;
+        try
+        {
+            Check(CreateVertexShader(device, D3D11Native.Compile(OcclusionShaders.OutlineVertex, "main", "vs_5_0", "freppuccino_outline.vert.hlsl"), out outlineVs), "CreateVertexShader");
+            Check(CreatePixelShader(device, D3D11Native.Compile(OcclusionShaders.OutlinePixelMs, "main", "ps_5_0", "freppuccino_outline_ms.hlsl"), out outlinePsMs), "CreatePixelShader");
+            Check(CreatePixelShader(device, D3D11Native.Compile(OcclusionShaders.OutlinePixel1, "main", "ps_5_0", "freppuccino_outline_1.hlsl"), out outlinePs1), "CreatePixelShader");
+            Check(CreateBlendState(device, BlendDesc.Alpha, out alphaBlend), "CreateBlendState");
+            outlineFailed = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogOnce("outline", "Freppuccino D3D11: outline pass unavailable: " + ex.Message);
+            ReleaseOutline();
+            return false;
+        }
+    }
+
+    void ReleaseOutline()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        SafeRelease(ref outlineVs); SafeRelease(ref outlinePsMs); SafeRelease(ref outlinePs1); SafeRelease(ref alphaBlend);
+    }
+
+    static int DepthSrvFormat(int typeless) => typeless switch { 19 or 20 => 21, 44 or 45 => 46, 39 or 40 => 41, 53 or 55 => 56, _ => -1 };
+
+    [SupportedOSPlatform("windows")]
+    unsafe bool DrawOutlinesWin(DisplayPipeline pipeline, int serial, float[] endpoints, System.Drawing.Color ink, float faint, float halfWidth, float pullPx)
+    {
+        var dev = pipeline.GetDirect3d11Device();
+        var ctx = pipeline.GetDirect3d11DeviceContext();
+        if (dev == IntPtr.Zero || dev != device || !initOk || ctxState == IntPtr.Zero || !EnsurePost() || !EnsureOutline()) return false;
+        if (outlineUniforms == null || gPos.Srv == IntPtr.Zero || TraceSource.Serial != serial || TraceSource.Viewport != (pipeline.Viewport?.Id ?? Guid.Empty)) return false;
+        Span<IntPtr> rtvs = stackalloc IntPtr[MaxRenderTargets];
+        Span<Viewport> vps = stackalloc Viewport[MaxViewports];
+        IntPtr dsv = IntPtr.Zero, depthRes = IntPtr.Zero, depthSrv = IntPtr.Zero, segBuf = IntPtr.Zero, segSrv = IntPtr.Zero, prev = IntPtr.Zero;
+        try
+        {
+            OMGetRenderTargets(ctx, rtvs, out dsv);
+            int nvp = RSGetViewports(ctx, vps);
+            if (dsv == IntPtr.Zero || rtvs[0] == IntPtr.Zero || nvp == 0) return false;
+            ((delegate* unmanaged<IntPtr, IntPtr*, void>)(*(void***)dsv)[7])(dsv, &depthRes);
+            Texture2DDesc td;
+            ((delegate* unmanaged<IntPtr, Texture2DDesc*, void>)(*(void***)depthRes)[10])(depthRes, &td);
+            int fmt = DepthSrvFormat(td.Format);
+            if (fmt < 0 || (td.BindFlags & BIND_SHADER_RESOURCE) == 0 || td.SampleCount > 8) return false;
+            uint* sd = stackalloc uint[6] { (uint)fmt, td.SampleCount > 1 ? 6u : 4u, 0, 1, 0, 0 };
+            Check(((delegate* unmanaged<IntPtr, IntPtr, uint*, IntPtr*, int>)(*(void***)device)[7])(device, depthRes, sd, &depthSrv), "CreateShaderResourceView");
+            int count = endpoints.Length / 4;
+            Check(CreateBuffer(device, new BufferDesc { ByteWidth = (uint)(count * 16), Usage = USAGE_DEFAULT, BindFlags = BIND_SHADER_RESOURCE, MiscFlags = 0x40, StructureByteStride = 16 }, out segBuf), "CreateBuffer");
+            UpdateSubresource(ctx, segBuf, System.Runtime.InteropServices.MemoryMarshal.AsBytes(endpoints.AsSpan()));
+            uint* bd = stackalloc uint[6] { 0, 1, 0, (uint)count, 0, 0 };
+            Check(((delegate* unmanaged<IntPtr, IntPtr, uint*, IntPtr*, int>)(*(void***)device)[7])(device, segBuf, bd, &segSrv), "CreateShaderResourceView");
+
+            prev = SwapDeviceContextState(ctx, ctxState, wantPrevious: true);
+            try
+            {
+                var vp = vps[0];
+                Span<byte> full = stackalloc byte[Uniforms.MaxBytes];
+                full.Clear();
+                outlineUniforms.CopyTo(full);
+                UpdateSubresource(ctx, cb, full);
+                Span<float> v = stackalloc float[36];
+                v.Clear();
+                v[0] = vp.Width; v[1] = vp.Height; v[6] = vp.X; v[7] = vp.Y;
+                clip.CopyTo(v[8..]);
+                v[24] = vp.MinDepth; v[25] = vp.MaxDepth; v[26] = td.Format is 53 or 55 ? 3e-5f : td.Format is 44 or 45 ? 2e-7f : 1e-6f;
+                v[28] = pullPx; v[29] = halfWidth; v[30] = faint;
+                v[32] = ink.R / 255f; v[33] = ink.G / 255f; v[34] = ink.B / 255f; v[35] = 1;
+                UpdateSubresource(ctx, postCb, System.Runtime.InteropServices.MemoryMarshal.AsBytes(v));
+                OMSetRenderTargets(ctx, rtvs[..1], IntPtr.Zero);
+                RSSetViewports(ctx, vps[..nvp]);
+                IASetPrimitiveTopology(ctx, TOPOLOGY_TRIANGLELIST);
+                IASetInputLayout(ctx, IntPtr.Zero);
+                VSSetShader(ctx, outlineVs);
+                PSSetShader(ctx, td.SampleCount > 1 ? outlinePsMs : outlinePs1);
+                GSSetShader(ctx, IntPtr.Zero); HSSetShader(ctx, IntPtr.Zero); DSSetShader(ctx, IntPtr.Zero);
+                VSSetConstantBuffer(ctx, 0, cb); PSSetConstantBuffer(ctx, 0, cb);
+                VSSetConstantBuffer(ctx, 1, postCb); PSSetConstantBuffer(ctx, 1, postCb);
+                VSSetShaderResource(ctx, 4, segSrv);
+                PSSetShaderResources(ctx, 0, [gPos.Srv, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, depthSrv]);
+                RSSetState(ctx, rs);
+                OMSetBlendState(ctx, alphaBlend, null, 0xffffffff);
+                OMSetDepthStencilState(ctx, dss, 0);
+                D3D11Native.Draw(ctx, (uint)(count / 2 * 6), 0);
+            }
+            finally
+            {
+                VSSetShaderResource(ctx, 4, IntPtr.Zero);
+                PSSetShaderResources(ctx, 0, [IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero]);
+                OMSetBlendState(ctx, IntPtr.Zero, null, 0xffffffff);
+                OMSetRenderTargets(ctx, ReadOnlySpan<IntPtr>.Empty, IntPtr.Zero);
+                SwapDeviceContextState(ctx, prev, wantPrevious: false);
+                SafeRelease(ref prev);
+            }
+            return true;
+        }
+        finally
+        {
+            for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
+            SafeRelease(ref dsv); SafeRelease(ref depthRes); SafeRelease(ref depthSrv); SafeRelease(ref segBuf); SafeRelease(ref segSrv);
+        }
     }
 
     [SupportedOSPlatform("windows")]
@@ -351,7 +502,7 @@ public sealed class D3D11Backend : IGpuBackend
             Check(CreatePixelShader(device, D3D11Native.Compile(OcclusionShaders.Composite, "main", "ps_5_0", "freppuccino_composite.hlsl"), out compositePs), "CreatePixelShader");
             Check(CreateSamplerState(device, SamplerDesc.Clamp(false), out pointSampler), "CreateSamplerState");
             Check(CreateSamplerState(device, SamplerDesc.Clamp(true), out linearSampler), "CreateSamplerState");
-            Check(CreateBuffer(device, new BufferDesc { ByteWidth = 128, Usage = USAGE_DEFAULT, BindFlags = BIND_CONSTANT_BUFFER }, out postCb), "CreateBuffer");
+            Check(CreateBuffer(device, new BufferDesc { ByteWidth = 144, Usage = USAGE_DEFAULT, BindFlags = BIND_CONSTANT_BUFFER }, out postCb), "CreateBuffer");
             Check(CreateDepthStencilState(device, DepthStencilDesc.Test(4), out depthDss), "CreateDepthStencilState");
             postFailed = false;
             return true;
@@ -595,6 +746,7 @@ public sealed class D3D11Backend : IGpuBackend
         programs.Clear(); failed.Clear();
         SafeRelease(ref ctxState); ctxStateFailed = false;
         ReleaseTargets(); ReleasePost(); postFailed = false;
+        ReleaseOutline(); outlineFailed = false;
         SafeRelease(ref rs); SafeRelease(ref dss); SafeRelease(ref cb); SafeRelease(ref device1);
         device = IntPtr.Zero; initOk = false;
     }
