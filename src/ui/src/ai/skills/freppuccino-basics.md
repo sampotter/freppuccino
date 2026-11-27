@@ -39,12 +39,12 @@ always: true
 - Roots (anything not used by an operation) are all drawn, merged with a sharp union.
 - combine makes a group and consumes its operands: they stop being roots. Build bottom-up: small sub-assemblies first
   (e.g. the handle), then combine those nodes. Don't put the same operand into two groups.
-- A group reads top to bottom like a feature history: operands[0] is the base, then each later operand adds to,
-  subtracts from or intersects with the result so far (its mode, listed in get_scene "modes"). combine's op only picks
+- A group reads top to bottom like a feature history: it starts empty, and each operand adds to, subtracts from or
+  intersects with the result of the operands above it (its mode, listed in get_scene "modes"). combine's op only picks
   the starting modes (subtract: everything after operands[0] cuts). set_mode changes one operand; one group can mix
   all three, e.g. [shell, +flange, -bore, ∩envelope], instead of nesting a union inside a subtract.
-- A hidden or missing operand is skipped. If the base is hidden, the group starts at the next add row; subtract and
-  intersect rows before any add have nothing to act on.
+- A hidden or missing operand is skipped. Subtract and intersect operands with nothing added above them do nothing, so
+  a group whose first shape is hidden or deleted starts at its next add operand. Moving an operand to index 0 makes it add.
 - Editing a primitive (update_primitive / transform) updates every operation above it. Prefer editing over deleting.
 - Restructure in place: add_operand / remove_operand change an existing group's operands (add_operand takes a mode);
   move re-parents or reorders a primitive or node (to another node, or to the root with no "to"); reordering a group

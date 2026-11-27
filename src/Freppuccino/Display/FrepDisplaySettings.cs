@@ -6,9 +6,11 @@ public enum ShapeDisplay { Silhouette, Wireframe, Hidden }
 
 public enum GeometryDisplay { Ghosted, Shaded, Wireframe, Arctic, Rendered }
 
+public enum HiddenLineDisplay { Faint, Off }
+
 public static class FrepDisplaySettings
 {
-    const string CuttersKey = "DisplayCutters", OtherShapesKey = "DisplayOtherShapes", GeometryKey = "DisplayGeometry";
+    const string CuttersKey = "DisplayCutters", OtherShapesKey = "DisplayOtherShapes", GeometryKey = "DisplayGeometry", HiddenLinesKey = "DisplayHiddenLines";
 
     public const string CuttersLabel = "Cutters", OtherShapesLabel = "Other shapes", GeometryLabel = "Rhino geometry";
 
@@ -48,6 +50,18 @@ public static class FrepDisplaySettings
             if (value == Geometry) return;
             if (FreppuccinoDisplayMode.Apply(value)) Write(GeometryKey, value);
             Changed?.Invoke();
+        }
+    }
+
+    public static HiddenLineDisplay HiddenLines
+    {
+        get => Read(HiddenLinesKey, HiddenLineDisplay.Faint);
+        set
+        {
+            if (value == HiddenLines) return;
+            Write(HiddenLinesKey, value);
+            Changed?.Invoke();
+            RhinoDoc.ActiveDoc?.Views.Redraw();
         }
     }
 

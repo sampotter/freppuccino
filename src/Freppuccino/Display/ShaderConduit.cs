@@ -203,7 +203,7 @@ public sealed class ShaderConduit : DisplayConduit
             return;
         }
         float halfWidth = (float)(0.5 * Math.Ceiling(dp.DpiScale - 1e-3));
-        d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: true), ControlOutlines.UnselectedColor, ControlOutlines.HiddenAlpha / 255f, halfWidth, (float)OutlinePullPx);
+        d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: true), ControlOutlines.UnselectedColor, FrepDisplaySettings.HiddenLines == HiddenLineDisplay.Faint ? ControlOutlines.HiddenAlpha / 255f : 0f, halfWidth, (float)OutlinePullPx);
         d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: false), ControlOutlines.UnselectedColor, 1f, halfWidth, (float)OutlinePullPx, added: true);
         Trace(dp, "post-after-outlines", null, wroteDepth);
     }

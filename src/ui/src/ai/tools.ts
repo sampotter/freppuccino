@@ -110,13 +110,14 @@ export const TOOLS: ToolDef[] = [
   tool(
     'combine',
     'Creates a group node from ≥ 2 operands (primitive refs or node refs). A group reads top to bottom: operands[0] is the ' +
-      'base, and every later operand applies its mode (add, subtract or intersect) to the result so far. op picks the modes: ' +
+      'base (added), and every operand applies its mode (add, subtract or intersect) to the result of the ones above it; a ' +
+      'subtract or intersect operand with nothing added above it does nothing. op picks the modes: ' +
       'union = all add; subtract = operands[0] minus all the others; intersect = all intersect. Change single rows later with ' +
       'set_mode. k = blend radius in model units (0 = sharp edge, > 0 = smooth fillet-like blend) for every join in the group. ' +
       'Operands are consumed: only roots are drawn. Returns the node ref (N#).',
     {
       op: { type: 'string', enum: ['union', 'subtract', 'intersect'] },
-      operands: refs('primitive or node refs; the first is the base'),
+      operands: refs('primitive or node refs; the first is the base (always add)'),
       k: { type: 'number', description: 'blend radius, ≥ 0 (default 0)' },
     },
     ['op', 'operands'],
@@ -151,7 +152,7 @@ export const TOOLS: ToolDef[] = [
   ),
   tool(
     'add_operand',
-    'Adds a primitive or node to an existing group (at index, default the end; index 0 makes it the base) with a mode ' +
+    'Adds a primitive or node to an existing group (at index, default the end; index 0 makes it the base, mode add) with a mode ' +
       '(default add). Order matters: each operand combines with the operands above it. Deforms take exactly one operand: use ' +
       'move to swap it. Cycles and duplicates are rejected.',
     {
@@ -188,8 +189,8 @@ export const TOOLS: ToolDef[] = [
   tool(
     'set_mode',
     "Sets how one operand of a group combines with the operands above it: add, subtract or intersect. The mode belongs to " +
-      "that group only (a shared operand can add in one group and subtract in another). operands[0] is the base: its mode " +
-      "is kept but only applies once another operand is moved above it.",
+      "that group only (a shared operand can add in one group and subtract in another). Every operand's mode applies, the " +
+      "first one's too: a subtract or intersect operand with nothing added above it does nothing.",
     {
       node: { type: 'string', description: 'group node ref, e.g. "N3"' },
       operand: { type: 'string', description: 'primitive or node ref in that group' },

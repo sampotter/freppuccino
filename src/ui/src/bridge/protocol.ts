@@ -62,9 +62,24 @@ export interface UserFnInfo {
   error?: string
 }
 
+export type ShapeDisplay = 'Silhouette' | 'Wireframe' | 'Hidden'
+export type GeometryDisplay = 'Ghosted' | 'Shaded' | 'Wireframe' | 'Arctic' | 'Rendered'
+export type HiddenLineDisplay = 'Faint' | 'Off'
+
+export interface DisplaySettings {
+  cutters: ShapeDisplay
+  otherShapes: ShapeDisplay
+  geometry: GeometryDisplay
+  hiddenLines: HiddenLineDisplay
+}
+
 export interface UiSettings {
   units: string
+  display: DisplaySettings
 }
+
+export type PanelTab = 'scene' | 'script' | 'ai' | 'settings'
+
 
 export type Theme = 'light' | 'dark'
 
@@ -73,6 +88,8 @@ export type HostMessage =
   | { type: 'state'; scene: SceneNode[]; selection: Id[]; settings: UiSettings; theme: Theme; frepMode: boolean }
   | { type: 'scene'; scene: SceneNode[] }
   | { type: 'view'; frepMode: boolean }
+  | { type: 'settings'; settings: UiSettings }
+  | { type: 'showTab'; tab: PanelTab }
   /** selected primitives (Rhino selection) + operation nodes (kept by the host) */
   | { type: 'selection'; ids: Id[] }
   | { type: 'notice'; level: 'info' | 'warning' | 'error'; text: string }
@@ -116,6 +133,8 @@ export type UiMessage =
   | { type: 'deleteNodes'; ids: Id[]; deep?: boolean }
   | { type: 'moveNode'; id: Id; from: Id | null; to: Id | null; index?: number }
   | { type: 'setModes'; rows: { parent: Id; child: Id; mode: RowMode }[] }
+  | { type: 'setDisplay'; cutters?: ShapeDisplay; otherShapes?: ShapeDisplay; geometry?: GeometryDisplay; hiddenLines?: HiddenLineDisplay }
+  | { type: 'tabShown' }
   /** AI agent tool call (src/ui/src/ai/tools.ts → Ai/AiTools.cs); answered by aiToolResult. */
   | { type: 'aiTool'; callId: string; tool: string; args: Record<string, unknown>; source?: 'ai' | 'script' }
   /** Save a finished AI run to disk for review (Ai/AiRunLog.cs). Images become PNG files next to transcript.json. */

@@ -1,5 +1,5 @@
 import type { Transport } from './host'
-import type { AllowedCommand, HostMessage, OperationKind, RowMode, SceneNode, UiMessage, UserFnInfo } from './protocol'
+import type { AllowedCommand, HostMessage, OperationKind, RowMode, SceneNode, UiMessage, UiSettings, UserFnInfo } from './protocol'
 
 /**
  * Stand-in for Rhino when the page runs in a normal browser (`npm run dev`).
@@ -43,6 +43,7 @@ export function createMockHost(): Transport {
     prim('sdCappedCylinder', { h: 2, r: 0.8 }, 'Bore'),
     prim('sdEllipsoid', { 'r.x': 1.5, 'r.y': 0.6, 'r.z': 0.6 }),
   ])
+  let settings: UiSettings = { units: 'Millimeters', display: { cutters: 'Silhouette', otherShapes: 'Silhouette', geometry: 'Ghosted', hiddenLines: 'Faint' } }
   let scene: SceneNode[] = [
     prim('sdSphere', { s: 2 }),
     prim('sdTorus', { 't.x': 3, 't.y': 0.6 }),
@@ -103,7 +104,7 @@ export function createMockHost(): Transport {
   function handle(m: UiMessage) {
     switch (m.type) {
       case 'ready':
-        emit({ type: 'state', scene, selection, settings: { units: 'Millimeters' }, theme, frepMode: false })
+        emit({ type: 'state', scene, selection, settings, theme, frepMode: false })
         break
       case 'showFrepMode':
         emit({ type: 'view', frepMode: true })
@@ -192,6 +193,12 @@ export function createMockHost(): Transport {
           return { ...x, k: m.k }
         })
         emit({ type: 'scene', scene })
+        break
+      case 'setDisplay':
+        settings = { ...settings, display: { ...settings.display, ...Object.fromEntries(Object.entries(m).filter(([k, v]) => k !== 'type' && v !== undefined)) } }
+        emit({ type: 'settings', settings })
+        break
+      case 'tabShown':
         break
       case 'setModes':
         scene = map(scene, (x) => {

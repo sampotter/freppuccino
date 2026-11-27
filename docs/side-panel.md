@@ -62,7 +62,9 @@ Ids are strings: a primitive's Rhino object id (GUID), or a CSG node's name (`N3
 
 | Host → page | When |
 |---|---|
-| `state {scene, selection, settings: {units}, theme, frepMode}` | reply to `ready`; active document changed. `frepMode` = the active view shows the Freppuccino display mode |
+| `settings {settings}` | display settings changed (Settings tab, `-FrepSettings`, or a failed change rolled back) |
+| `showTab {tab}` | `FrepSettings`: show that tab (`settings`) |
+| `state {scene, selection, settings: {units, display}, theme, frepMode}` | reply to `ready`; active document changed. `frepMode` = the active view shows the Freppuccino display mode |
 | `view {frepMode}` | the active view switched into or out of the Freppuccino display mode, or another view became active (checked on Idle) |
 | `scene {scene}` | object added/deleted/replaced/attributes changed, CSG tree changed (coalesced on Idle) |
 | `selection {ids}` | Rhino selection or panel node selection changed |
@@ -78,6 +80,8 @@ Ids are strings: a primitive's Rhino object id (GUID), or a CSG node's name (`N3
 | `showFrepMode` | ✅ switch the active view to the Freppuccino display mode. Sent by the "F-rep display mode" button, shown under the header while `frepMode` is false |
 | `applyOperation {operands, op, k}` | ✅ new group over ≥ 2 top-level operands with a preset (`union` = all add, `subtract` = operands[0] minus the rest, `intersect` = all intersect); selects it |
 | `setOperation {id, op, k, preview?}` | ✅ edit a node's k live (`op` = `group`, `blend` or `offset`; a preset op also resets a group's modes). `preview: true` = drag tick, applied without undo; the next non-preview one ends the gesture as one undo step |
+| `setDisplay {cutters?, otherShapes?, geometry?, hiddenLines?}` | ✅ Settings tab, live; persisted plug-in settings. Answered with `settings`; a failed Rhino geometry change also sends the notice "Couldn't apply that display setting." |
+| `tabShown` | ✅ the page acted on `showTab` |
 | `setModes {rows: [{parent, child, mode}]}` | ✅ set the mode (`add` / `subtract` / `intersect`) of each row `child` in group `parent`; one "Set mode(s)" undo step. The tree's mode menu sends every selected row that has a mode button |
 | `setNodeParam {id, name, value, preview?}` | ✅ edit a twist/bend/repeat param; same preview/commit gesture as `setOperation` |
 | `deleteNodes {ids}` | ✅ nodes still used by other nodes are kept |
@@ -89,7 +93,7 @@ Ids are strings: a primitive's Rhino object id (GUID), or a CSG node's name (`N3
 
 Live edits: the inspector has no Update button. An op click sends one `setOperation`; a Blend drag sends `preview` ticks (≤ ~30 Hz, trailing) then a final one on release. The host (`FrepTrees.Preview`/`Commit`) remembers the tree from before the gesture and records one undo step back to it. A gesture whose final message never arrives is committed by any other page message, any Rhino command (incl. Undo), a page reload / doc switch, or panel close. The page ignores host snapshots for the node while dragging and until the host echoes its last sent value, so stale snapshots can't yank the slider.
 
-A CSG node is a group (`op: "group"`, `FrepOp.Group`) with a blend `k` (0 = sharp, > 0 = smooth) and one mode per child in `modes`. It reads top to bottom: start empty; children[0], if present, is the base and is added; every later present child applies its mode (`add`, `subtract`, `intersect`) to the result so far, smooth with `k`. Hidden or missing children are skipped and never become the base; subtract and intersect on an empty result leave it empty. Old files load as groups: union = all add, difference = base + all subtract, intersection = all intersect (an old intersection with a hidden or missing operand now shows the remaining rows instead of nothing).
+A CSG node is a group (`op: "group"`, `FrepOp.Group`) with a blend `k` (0 = sharp, > 0 = smooth) and one mode per child in `modes`. It reads top to bottom: start empty; every present child applies its mode (`add`, `subtract`, `intersect`) to the result of the children above it, smooth with `k`. Hidden or missing children are skipped; subtract and intersect on an empty result leave it empty, so deleting or hiding the first shape never turns a cutter solid. Creating a group, and moving a row to the top, makes that row `add`. A group left with one subtract or intersect row stays a group (it draws nothing) instead of collapsing into its row. Old files load as groups: union = all add, difference = first add + all subtract, intersection = first add + all intersect (an old intersection with a hidden or missing operand now shows the remaining rows instead of nothing).
 
 ## Browser tree
 
@@ -100,7 +104,7 @@ SceneNode { id, kind: primitive|operation, name?, visible, locked, missing?,
             sdfType?, params?, color?,  // primitive; color = SDF.Color "#RRGGBB" (white if missing)
             userFn?,                    // sdUser only, see below; params then = just b.x/b.y/b.z
             op?, k?, children?,         // operation: children are operands, in order
-            modes?,                     // group: add|subtract|intersect per child; children[0] is the base
+            modes?,                     // group: add|subtract|intersect per child
             ref?, refMissing? }         // twist|bend|repeat: params = {angle} / {angle, direction} / {x, y, z}; ref = line/box id
 ```
 
@@ -125,6 +129,8 @@ Any user-text edit (panel, `SetUserText`, an AI agent) fires `ModifyObjectAttrib
 
 Inspector: read-only code view (`components/code-view.tsx`: line numbers, diagnostic lines tinted red with the message on hover, 240px cap with a resize handle + expand, copy), diagnostics list (click → scroll to line) or "Compiles OK · <hash>", then a slider per declared param, `Lipschitz L`, and the bounding box half-extents. Param slider range from default d: d > 0 → [0, 4d], d < 0 → [4d, 0], d = 0 → [−1, 1]; step ≈ span/100; typed values may go past either end. The code view has an **Edit** button that opens the function in the Script tab (`components/script-panel.tsx`, editor: `components/code-editor.tsx`; see [ai.md](ai.md#coverage-app-features-vs-ai-tools)), where the code is editable, checked as you type, and applied with Ctrl+Enter.
 
-Inspector: one primitive → its color (`SDF.Color`: current-color swatch / picker + hex field; new primitives start white `#FCFCFC`) and parameters; one group → its rows with their modes and its blend k, edited live (no Update button), delete; ≥ 2 selected top-level nodes → combine them into a group with a preset (pick order; first = base).
+Inspector: one primitive → its color (`SDF.Color`: current-color swatch / picker + hex field; new primitives start white `#FCFCFC`) and parameters; one group → a Union / Difference / Intersection switch (a preset that sets every row; none selected when the rows are mixed), its blend k with an editable slider maximum ("max", per group for the session; typing a larger k raises it), Unwrap and Delete; one repeat → its spacing and "Blend the copies"; ≥ 2 selected top-level nodes → combine them into a group with a preset (pick order; first = base). Twist, Bend, Repeat and Offset are toolbar commands (`FTwist`, `FBend`, `FRepeat`, `FOffset`); the inspector has no Deform section.
 
-Tree: each row inside a group has a mode button left of its icon (the union, subtract or intersect icon); click it for a menu with Add, Subtract and Intersect, applied to every selected row that has one. The first row of a group shows a dot instead: it is the base. Dragging rows within a group changes the shape (one undo step). The blend field's tooltip explains the radius in document units.
+Tree: each row inside a group has a mode button left of its icon (the union, subtract or intersect icon); click it for a menu with Add, Subtract and Intersect, applied to every selected row that has one. The first row of a group, when it adds, shows a dot instead: it is the base. A subtract or intersect row with no added row present above it is dimmed, with the tooltip "Nothing above this row to subtract from." / "…to intersect with.". Top-level rows show a hollow ring ("Top level. Everything here is added together."). Dragging rows within a group changes the shape (one undo step). The blend field's tooltip explains the radius in document units.
+
+Settings tab (gear, `components/settings-panel.tsx`): Cutters and Other shapes (Silhouette / Wireframe / Hidden), Rhino geometry (Ghosted / Shaded / Wireframe / Arctic / Rendered) and "Show hidden lines faintly" (cutter outline parts behind the F-rep; off discards them). Live: each change sends `setDisplay`; the host answers with `settings`, and a Rhino geometry change that fails comes back as a notice plus the applied settings. The `FrepSettings` command and its toolbar button open the panel on this tab (`showTab`, acknowledged with `tabShown`; a tab requested before the page is ready is sent after `ready`). `-FrepSettings` sets the same values from the command line (Cutters, OtherShapes, Geometry, HiddenLines=Faint/Off).

@@ -1,4 +1,4 @@
-import { Code2, Loader2, Sparkles, X } from 'lucide-react'
+import { Box, Code2, Loader2, Settings, Sparkles, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type RefObject } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,16 +9,24 @@ import { BrandIcon } from '@/components/brand-icon'
 import { Inspector } from '@/components/inspector'
 import { ScriptPanel } from '@/components/script-panel'
 import { SceneTree } from '@/components/scene-tree'
+import { SettingsPanel } from '@/components/settings-panel'
 import { dismissNotice, send, useHost } from '@/bridge/host'
+import type { PanelTab } from '@/bridge/protocol'
 import { indexNodes, labelNodes } from '@/lib/scene'
 import { cn } from '@/lib/utils'
 import appIcon from '@/brand/app-icon.svg'
 import wordmark from '@/brand/wordmark.svg?raw'
 
-type Tab = 'scene' | 'script' | 'ai'
+type Tab = PanelTab
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('scene')
+  const tabRequest = useHost((s) => s.tabRequest)
+  const [shownRequest, setShownRequest] = useState(0)
+  if (tabRequest && tabRequest.seq !== shownRequest) {
+    setShownRequest(tabRequest.seq)
+    setTab(tabRequest.tab)
+  }
   const [editRequest, setEditRequest] = useState<{ id: string; seq: number }>()
   const host = useHost((s) => s.host)
   const synced = useHost((s) => s.synced)
@@ -80,12 +88,17 @@ export default function App() {
             onValueChange={(v) => v && setTab(v as Tab)}
             aria-label="Panel"
           >
-            <ToggleGroupItem value="scene" className="px-2">Scene</ToggleGroupItem>
+            <ToggleGroupItem value="scene" className="px-2">
+              <Box /> Scene
+            </ToggleGroupItem>
             <ToggleGroupItem value="script" className="px-2">
               <Code2 /> Script
             </ToggleGroupItem>
             <ToggleGroupItem value="ai" className="px-2">
               <Sparkles /> AI
+            </ToggleGroupItem>
+            <ToggleGroupItem value="settings" className="px-2">
+              <Settings /> Settings
             </ToggleGroupItem>
           </ToggleGroup>
         </span>
@@ -143,6 +156,9 @@ export default function App() {
       </div>
       <div className={cn('flex min-h-0 flex-1 flex-col', tab !== 'ai' && 'hidden')}>
         <AiPanel />
+      </div>
+      <div className={cn('flex min-h-0 flex-1 flex-col overflow-y-auto', tab !== 'settings' && 'hidden')}>
+        <SettingsPanel />
       </div>
 
       <div className="absolute inset-x-3 bottom-3">

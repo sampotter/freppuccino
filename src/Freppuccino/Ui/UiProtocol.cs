@@ -98,7 +98,9 @@ public sealed record UserFnDiagnosticInfo(int Line, int Column, string Message);
 
 public sealed record UserFnParamInfo(string Name, double Value, double Default);
 
-public sealed record UiSettings(string Units);
+public sealed record UiSettings(string Units, DisplayInfo Display);
+
+public sealed record DisplayInfo(string Cutters, string OtherShapes, string Geometry, string HiddenLines);
 
 // ───────────────────────────── Host → UI ─────────────────────────────
 
@@ -111,6 +113,16 @@ public abstract record HostMessage
 public sealed record StateMessage(IReadOnlyList<SceneNode> Scene, IReadOnlyList<string> Selection, UiSettings Settings, string Theme, bool FrepMode) : HostMessage
 {
     public override string Type => "state";
+}
+
+public sealed record SettingsMessage(UiSettings Settings) : HostMessage
+{
+    public override string Type => "settings";
+}
+
+public sealed record ShowTabMessage(string Tab) : HostMessage
+{
+    public override string Type => "showTab";
 }
 
 public sealed record ViewMessage(bool FrepMode) : HostMessage
@@ -190,6 +202,8 @@ public sealed record MoveNodeRequest(string Id, string? From = null, string? To 
 public sealed record SetModesRequest(ModeRow[] Rows);
 
 public sealed record ModeRow(string Parent, string Child, string Mode);
+
+public sealed record SetDisplayRequest(string? Cutters = null, string? OtherShapes = null, string? Geometry = null, string? HiddenLines = null);
 
 /// AI agent tool call (Ai/AiTools.cs); answered with an AiToolResultMessage carrying the same CallId.
 public sealed record AiToolRequest(string CallId, string Tool, JsonElement? Args = null, string? Source = null);

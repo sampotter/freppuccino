@@ -102,6 +102,46 @@ public sealed class UiController : IDisposable
         RhinoApp.EscapeKeyPressed += OnEscape;
         Command.BeginCommand += OnBeginCommand;
         ShaderBuilds.Changed += OnShaderBuilds;
+        FrepDisplaySettings.Changed += OnDisplayChanged;
+        TabRequested += OnTabRequested;
+    }
+
+    static string? pendingTab;
+    static event Action<string>? TabRequested;
+
+    public static void ShowTab(string tab)
+    {
+        pendingTab = tab;
+        TabRequested?.Invoke(tab);
+    }
+
+    void OnTabRequested(string tab) => web.Send(new ShowTabMessage(tab));
+
+    void OnDisplayChanged()
+    {
+        if (RhinoDoc.ActiveDoc is { } doc) web.Send(new SettingsMessage(Settings(doc)));
+    }
+
+    static UiSettings Settings(RhinoDoc doc) => new(doc.ModelUnitSystem.ToString(), new DisplayInfo(
+        FrepDisplaySettings.Cutters.ToString(), FrepDisplaySettings.OtherShapes.ToString(),
+        FrepDisplaySettings.Geometry.ToString(), FrepDisplaySettings.HiddenLines.ToString()));
+
+    void SetDisplay(SetDisplayRequest request)
+    {
+        static T? Parse<T>(string? s) where T : struct, Enum =>
+            s == null ? null : Enum.TryParse<T>(s, out var v) && Enum.IsDefined(v) ? v : throw new JsonException($"unknown display value '{s}'");
+        if (Parse<ShapeDisplay>(request.Cutters) is { } c) FrepDisplaySettings.Cutters = c;
+        if (Parse<ShapeDisplay>(request.OtherShapes) is { } o) FrepDisplaySettings.OtherShapes = o;
+        if (Parse<HiddenLineDisplay>(request.HiddenLines) is { } h) FrepDisplaySettings.HiddenLines = h;
+        if (Parse<GeometryDisplay>(request.Geometry) is { } g)
+        {
+            FrepDisplaySettings.Geometry = g;
+            if (FrepDisplaySettings.Geometry != g)
+            {
+                web.Send(new NoticeMessage("warning", "Couldn't apply that display setting."));
+                OnDisplayChanged();
+            }
+        }
     }
 
     void OnShaderBuilds() => web.Send(new CompilingMessage(ShaderBuilds.Active));
@@ -119,6 +159,8 @@ public sealed class UiController : IDisposable
         RhinoDoc.ModifyObjectAttributes -= OnModifyAttributes;
         FrepTrees.Changed -= OnTreeChanged;
         ShaderBuilds.Changed -= OnShaderBuilds;
+        FrepDisplaySettings.Changed -= OnDisplayChanged;
+        TabRequested -= OnTabRequested;
         NodeSelectionChanged -= OnNodeSelectionChanged;
         RhinoApp.Idle -= OnIdle;
         RhinoApp.EscapeKeyPressed -= OnEscape;
@@ -240,7 +282,7 @@ public sealed class UiController : IDisposable
         sceneDirty = selectionDirty = false;
         sentFrepMode = FrepMode(doc);
         var theme = Rhino.Runtime.HostUtils.RunningInDarkMode ? "dark" : "light";
-        web.Send(new StateMessage(BuildScene(doc), SelectedIds(doc), new UiSettings(doc.ModelUnitSystem.ToString()), theme, sentFrepMode));
+        web.Send(new StateMessage(BuildScene(doc), SelectedIds(doc), Settings(doc), theme, sentFrepMode));
     }
 
     static string NodeKey(int id) => FrepTree.NodeName(id);
@@ -491,6 +533,13 @@ public sealed class UiController : IDisposable
                 case "ready":
                     SendState(doc);
                     OnShaderBuilds();
+                    if (pendingTab is { } tab) web.Send(new ShowTabMessage(tab));
+                    break;
+                case "tabShown":
+                    pendingTab = null;
+                    break;
+                case "setDisplay":
+                    SetDisplay(Parse<SetDisplayRequest>(message));
                     break;
                 case "select":
                     using (Selection.FrepSelection.Explicit()) Select(doc, Parse<SelectRequest>(message));

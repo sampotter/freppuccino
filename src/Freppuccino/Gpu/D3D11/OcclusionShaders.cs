@@ -212,6 +212,7 @@ static class OcclusionShaders
             }
             if (rhinoD < lineD - depth.z && rhinoD < frepD - depth.z) discard;
             float a = frepD < lineD ? mode.z : 1.0;
+            if (a <= 0.0) discard;
             return float4(ink.rgb, a * cov);
         }
         """;

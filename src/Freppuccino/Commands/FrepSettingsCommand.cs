@@ -8,22 +8,24 @@ using Rhino.Input.Custom;
 namespace Freppuccino.Commands;
 
 [Guid("3d8f2b71-6c4e-4a9d-9e15-b2c7a0f4d863")]
-public class FrepDisplayCommand : Command
+public class FrepSettingsCommand : Command
 {
-    public override string EnglishName => "FrepDisplay";
+    public override string EnglishName => "FrepSettings";
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         if (mode == RunMode.Interactive)
         {
-            FrepDisplayForm.ShowOrFocus();
+            Rhino.UI.Panels.OpenPanel(typeof(FrepPanel).GUID, true);
+            UiController.ShowTab("settings");
             return Result.Success;
         }
         var cutters = FrepDisplaySettings.Cutters;
         var others = FrepDisplaySettings.OtherShapes;
         var geometry = FrepDisplaySettings.Geometry;
+        var hidden = FrepDisplaySettings.HiddenLines;
         var go = new GetOption();
-        go.SetCommandPrompt("Freppuccino display");
+        go.SetCommandPrompt("Freppuccino settings");
         go.AcceptNothing(true);
         while (true)
         {
@@ -31,6 +33,7 @@ public class FrepDisplayCommand : Command
             int c = go.AddOptionEnumList(FrepDisplaySettings.OptionName(FrepDisplaySettings.CuttersLabel), cutters);
             int s = go.AddOptionEnumList(FrepDisplaySettings.OptionName(FrepDisplaySettings.OtherShapesLabel), others);
             int g = go.AddOptionEnumList("Geometry", geometry);
+            int h = go.AddOptionEnumList("HiddenLines", hidden);
             var r = go.Get();
             if (r == Rhino.Input.GetResult.Nothing) break;
             if (r != Rhino.Input.GetResult.Option) return Result.Cancel;
@@ -38,9 +41,11 @@ public class FrepDisplayCommand : Command
             if (o.Index == c) cutters = go.GetSelectedEnumValue<ShapeDisplay>();
             else if (o.Index == s) others = go.GetSelectedEnumValue<ShapeDisplay>();
             else if (o.Index == g) geometry = go.GetSelectedEnumValue<GeometryDisplay>();
+            else if (o.Index == h) hidden = go.GetSelectedEnumValue<HiddenLineDisplay>();
         }
         FrepDisplaySettings.Cutters = cutters;
         FrepDisplaySettings.OtherShapes = others;
+        FrepDisplaySettings.HiddenLines = hidden;
         FrepDisplaySettings.Geometry = geometry;
         return Result.Success;
     }
