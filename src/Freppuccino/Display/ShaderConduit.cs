@@ -174,6 +174,7 @@ public sealed class ShaderConduit : DisplayConduit
     static bool DrewDepth(IGpuBackend gpu) => gpu is Gpu.D3D11.D3D11Backend { WroteDepth: true };
 
     public static bool OwnOutlines { get; set; } = true;
+    static bool loggedOutlineSkip;
     public static double OutlinePullPx { get; set; } = 0.0;
 
     static bool OwnOutlinesPossible(IGpuBackend gpu, DisplayPipeline dp) => OwnOutlines && gpu is Gpu.D3D11.D3D11Backend d3d && d3d.OutlinesPossible(dp);
@@ -184,7 +185,12 @@ public sealed class ShaderConduit : DisplayConduit
     {
         if (Gpu.D3D11.DepthTrace.Armed(dp)) Gpu.D3D11.DepthTrace.Reference(dp, gpu as Gpu.D3D11.D3D11Backend);
         Trace(dp, "post-before-outlines", null, wroteDepth);
-        if (gpu is not Gpu.D3D11.D3D11Backend d3d || serial < 0 || !wroteDepth) return;
+        if (gpu is not Gpu.D3D11.D3D11Backend d3d || serial < 0 || !wroteDepth)
+        {
+            if (!loggedOutlineSkip) RhinoApp.WriteLine("Freppuccino: cutter outlines skipped this frame (no current G-buffer).");
+            loggedOutlineSkip = true;
+            return;
+        }
         var endpoints = ControlOutlines.Segments(dp, doc, cutters: true);
         d3d.DrawOutlines(dp, serial, endpoints, ControlOutlines.UnselectedColor, ControlOutlines.HiddenAlpha / 255f, (float)(0.5 * Math.Ceiling(dp.DpiScale - 1e-3)), (float)OutlinePullPx);
         Trace(dp, "post-after-outlines", null, wroteDepth);

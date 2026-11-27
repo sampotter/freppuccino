@@ -133,7 +133,11 @@ static class OcclusionShaders
             V o;
             o.world = atB ? b : a;
             o.side = sd * (mode.y + 1.0);
-            if (ca.w <= 1e-6 || cb.w <= 1e-6) { o.pos = float4(0.0, 0.0, 2.0, 1.0); return o; }
+            float wMin = max(1e-4, 1e-4 * max(abs(ca.w), abs(cb.w)));
+            if (ca.w < wMin && cb.w < wMin) { o.pos = float4(0.0, 0.0, 2.0, 1.0); return o; }
+            if (ca.w < wMin) { a = lerp(a, b, (wMin - ca.w) / (cb.w - ca.w)); ca = Clip(a); }
+            if (cb.w < wMin) { b = lerp(a, b, (wMin - ca.w) / (cb.w - ca.w)); cb = Clip(b); }
+            o.world = atB ? b : a;
             float2 half2 = size.xy * 0.5;
             float2 d = (cb.xy / cb.w - ca.xy / ca.w) * half2;
             float len = max(length(d), 1e-6);

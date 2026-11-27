@@ -55,6 +55,8 @@ public sealed class D3D11Backend : IGpuBackend
     IntPtr outlineVs, outlinePsMs, outlinePs1, alphaBlend;
     bool outlineFailed;
     byte[]? outlineUniforms;
+    readonly float[] gbufClip = new float[16];
+    Viewport gbufViewport;
 
     public int GBufferSerial => TraceSource.Serial;
     bool postFailed;
@@ -281,6 +283,8 @@ public sealed class D3D11Backend : IGpuBackend
             Bind(ctx, draw);
             D3D11Native.Draw(ctx, draw.VertexCount, 0);
             gbufferDrawn = true;
+            gbufViewport = vp;
+            clip.CopyTo(gbufClip, 0);
 
             PSSetSamplers(ctx, 0, [pointSampler, linearSampler]);
             VSSetShader(ctx, postVs);
@@ -408,6 +412,12 @@ public sealed class D3D11Backend : IGpuBackend
         SafeRelease(ref outlineVs); SafeRelease(ref outlinePsMs); SafeRelease(ref outlinePs1); SafeRelease(ref alphaBlend);
     }
 
+    bool Reject(string why)
+    {
+        LogOnce("outline-reject:" + why, $"Freppuccino D3D11: cutter outlines skipped this frame ({why}).");
+        return false;
+    }
+
     static int DepthSrvFormat(int typeless) => typeless switch { 19 or 20 => 21, 44 or 45 => 46, 39 or 40 => 41, 53 or 55 => 56, _ => -1 };
 
     [SupportedOSPlatform("windows")]
@@ -415,8 +425,14 @@ public sealed class D3D11Backend : IGpuBackend
     {
         var dev = pipeline.GetDirect3d11Device();
         var ctx = pipeline.GetDirect3d11DeviceContext();
-        if (dev == IntPtr.Zero || dev != device || !initOk || ctxState == IntPtr.Zero || !EnsurePost() || !EnsureOutline()) return false;
-        if (outlineUniforms == null || gPos.Srv == IntPtr.Zero || TraceSource.Serial != serial || TraceSource.Viewport != (pipeline.Viewport?.Id ?? Guid.Empty)) return false;
+        if (dev == IntPtr.Zero || dev != device || !initOk || ctxState == IntPtr.Zero || !EnsurePost() || !EnsureOutline()) return Reject("setup");
+        if (outlineUniforms == null || gPos.Srv == IntPtr.Zero || TraceSource.Serial != serial || TraceSource.Viewport != (pipeline.Viewport?.Id ?? Guid.Empty)) return Reject("stale-gbuffer");
+        var now = pipeline.Viewport.GetTransform(Rhino.DocObjects.CoordinateSystem.World, Rhino.DocObjects.CoordinateSystem.Clip);
+        for (int i = 0; i < 16; i++)
+        {
+            double a = now[i / 4, i % 4], b = gbufClip[i];
+            if (Math.Abs(a - b) > 1e-5 * Math.Max(1.0, Math.Abs(a))) return Reject("camera-changed");
+        }
         Span<IntPtr> rtvs = stackalloc IntPtr[MaxRenderTargets];
         Span<Viewport> vps = stackalloc Viewport[MaxViewports];
         IntPtr dsv = IntPtr.Zero, depthRes = IntPtr.Zero, depthSrv = IntPtr.Zero, segBuf = IntPtr.Zero, segSrv = IntPtr.Zero, prev = IntPtr.Zero;
@@ -424,12 +440,14 @@ public sealed class D3D11Backend : IGpuBackend
         {
             OMGetRenderTargets(ctx, rtvs, out dsv);
             int nvp = RSGetViewports(ctx, vps);
-            if (dsv == IntPtr.Zero || rtvs[0] == IntPtr.Zero || nvp == 0) return false;
+            if (dsv == IntPtr.Zero || rtvs[0] == IntPtr.Zero || nvp == 0) return Reject("no-targets");
+            var cur = vps[0];
+            if (cur.X != gbufViewport.X || cur.Y != gbufViewport.Y || cur.Width != gbufViewport.Width || cur.Height != gbufViewport.Height || cur.MinDepth != gbufViewport.MinDepth || cur.MaxDepth != gbufViewport.MaxDepth) return Reject("viewport-changed");
             ((delegate* unmanaged<IntPtr, IntPtr*, void>)(*(void***)dsv)[7])(dsv, &depthRes);
             Texture2DDesc td;
             ((delegate* unmanaged<IntPtr, Texture2DDesc*, void>)(*(void***)depthRes)[10])(depthRes, &td);
             int fmt = DepthSrvFormat(td.Format);
-            if (fmt < 0 || (td.BindFlags & BIND_SHADER_RESOURCE) == 0 || td.SampleCount > 8) return false;
+            if (fmt < 0 || (td.BindFlags & BIND_SHADER_RESOURCE) == 0 || td.SampleCount > 8) return Reject("depth-unreadable");
             uint* sd = stackalloc uint[6] { (uint)fmt, td.SampleCount > 1 ? 6u : 4u, 0, 1, 0, 0 };
             Check(((delegate* unmanaged<IntPtr, IntPtr, uint*, IntPtr*, int>)(*(void***)device)[7])(device, depthRes, sd, &depthSrv), "CreateShaderResourceView");
             int count = endpoints.Length / 4;
@@ -449,7 +467,7 @@ public sealed class D3D11Backend : IGpuBackend
                 Span<float> v = stackalloc float[36];
                 v.Clear();
                 v[0] = vp.Width; v[1] = vp.Height; v[6] = vp.X; v[7] = vp.Y;
-                clip.CopyTo(v[8..]);
+                gbufClip.CopyTo(v[8..]);
                 v[24] = vp.MinDepth; v[25] = vp.MaxDepth; v[26] = td.Format is 53 or 55 ? 3e-5f : td.Format is 44 or 45 ? 2e-7f : 1e-6f;
                 v[28] = pullPx; v[29] = halfWidth; v[30] = faint;
                 v[32] = ink.R / 255f; v[33] = ink.G / 255f; v[34] = ink.B / 255f; v[35] = 1;
