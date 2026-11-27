@@ -177,9 +177,10 @@ public sealed class FrepPicker : MouseCallback
         var scene = FrepScene.Get(doc);
         var ray = Ray(vp, client);
         var hits = new List<(FrepInstance Inst, double T)>();
+        var hidden = FrepDisplaySettings.Cutters == CutterDisplay.Hidden ? ControlOutlines.CutterObjects(doc) : [];
         foreach (var (inst, field, box) in InstanceFields(scene))
         {
-            if (doc.Objects.FindId(inst.Object) is not { IsLocked: false, IsHidden: false }) continue;
+            if (doc.Objects.FindId(inst.Object) is not { IsLocked: false, IsHidden: false } || hidden.Contains(inst.Object)) continue;
             if (March(field, box, ray) is { } t) hits.Add((inst, t));
         }
         if (hits.Count == 0) return null;

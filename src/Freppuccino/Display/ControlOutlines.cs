@@ -23,7 +23,7 @@ public static class ControlOutlines
     public static System.Drawing.Color UnselectedColor => Unselected;
     public static int HiddenAlpha { get; set; } = 64;
 
-    readonly record struct Key(Guid Obj, uint Serial, string Rel, bool Persp, Point3d Eye, Vector3d Dir);
+    readonly record struct Key(Guid Obj, uint Serial, string Rel, bool Wire, bool Persp, Point3d Eye, Vector3d Dir);
     static readonly Dictionary<Key, Curve[]> cache = [];
 
     /// Diagnostics: the placement (relative to the real brep) each instance outline was last drawn with.
@@ -49,7 +49,8 @@ public static class ControlOutlines
         var scene = Scene.FrepScene.Get(doc);
         var tree = Csg.FrepTrees.Get(doc);
         var (roots, instances) = FrepInstances.Compute(tree, scene.Ids);
-        var cutterObjects = cutters == null ? [] : Cutters(tree, roots);
+        var mode = FrepDisplaySettings.Cutters;
+        var cutterObjects = cutters == null && mode == CutterDisplay.Silhouette ? [] : Cutters(tree, roots);
         var rootSet = roots.ToHashSet();
         var selectedLeaves = FrepSelection.Leaves(doc);
 
@@ -96,7 +97,8 @@ public static class ControlOutlines
                 // (picked through its path, or through its own instance carrier).
                 bool isSel = (objSelected && rootSet.Contains(FrepOperand.Object(o.Id))) ||
                     selectedLeaves.Any(l => l.SamePath(inst)); // by path: its T may carry a drag preview
-                if (isSel != selected || (cutters is { } c && c != cutterObjects.Contains(inst.Object))) continue;
+                bool isCutter = cutterObjects.Contains(inst.Object);
+                if (isSel != selected || (cutters is { } c && c != isCutter) || (isCutter && !selected && mode == CutterDisplay.Hidden)) continue;
                 // The real brep B sits at the primary instance (B = T_p c); this instance shows T_inst c, previewed:
                 Transform eff;
                 if (inst.Root.IsNode && rootDrag.TryGetValue(inst.Root.NodeId, out var rx)) eff = rx * inst.T * primaryInv;
@@ -105,9 +107,16 @@ public static class ControlOutlines
                 else if (leafDrag.TryGetValue(o.Id, out var lx)) eff = inst.T * primaryInv * lx;
                 else eff = inst.T * primaryInv;
                 LastDrawn[(o.Id, inst.Root, string.Join(",", inst.Path))] = eff;
-                Draw(dp, o, Placement.IsIdentity(eff, 1e-12) ? null : eff, vp, doc, color, thickness);
+                Draw(dp, o, Placement.IsIdentity(eff, 1e-12) ? null : eff, vp, doc, color, thickness, isCutter && mode == CutterDisplay.Wireframe);
             }
         }
+    }
+
+    public static HashSet<Guid> CutterObjects(RhinoDoc doc)
+    {
+        var tree = Csg.FrepTrees.Get(doc);
+        var (roots, _) = FrepInstances.Compute(tree, Scene.FrepScene.Get(doc).Ids);
+        return Cutters(tree, roots);
     }
 
     static HashSet<Guid> Cutters(Csg.FrepTree tree, List<FrepOperand> roots)
@@ -133,25 +142,30 @@ public static class ControlOutlines
     public static List<(FrepInstance Instance, Curve[] Curves)> Pickable(RhinoDoc doc, RhinoViewport vp)
     {
         var scene = Scene.FrepScene.Get(doc);
-        var (_, instances) = FrepInstances.Compute(Csg.FrepTrees.Get(doc), scene.Ids);
+        var tree = Csg.FrepTrees.Get(doc);
+        var (roots, instances) = FrepInstances.Compute(tree, scene.Ids);
+        var mode = FrepDisplaySettings.Cutters;
+        var cutterObjects = mode == CutterDisplay.Silhouette ? [] : Cutters(tree, roots);
         var result = new List<(FrepInstance, Curve[])>();
         foreach (var group in instances.GroupBy(i => i.Object))
         {
             if (doc.Objects.FindId(group.Key) is not { IsLocked: false, IsHidden: false, Visible: true } o || !IsControl(o)) continue;
+            bool isCutter = cutterObjects.Contains(group.Key);
+            if (isCutter && mode == CutterDisplay.Hidden) continue;
             if (!group.First().T.TryGetInverse(out var primaryInv)) continue;
             foreach (var inst in group)
             {
                 var eff = inst.T * primaryInv;
-                result.Add((inst, Outline(o, Placement.IsIdentity(eff, 1e-12) ? null : eff, vp, doc)));
+                result.Add((inst, Outline(o, Placement.IsIdentity(eff, 1e-12) ? null : eff, vp, doc, isCutter && mode == CutterDisplay.Wireframe)));
             }
         }
         return result;
     }
 
-    static void Draw(DisplayPipeline dp, RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc, System.Drawing.Color color, int thickness)
+    static void Draw(DisplayPipeline dp, RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc, System.Drawing.Color color, int thickness, bool wire = false)
     {
-        if (sink != null) { sink.AddRange(Outline(o, rel, vp, doc)); return; }
-        foreach (var c in Outline(o, rel, vp, doc)) dp.DrawCurve(c, color, thickness);
+        if (sink != null) { sink.AddRange(Outline(o, rel, vp, doc, wire)); return; }
+        foreach (var c in Outline(o, rel, vp, doc, wire)) dp.DrawCurve(c, color, thickness);
     }
 
     static List<Curve>? sink;
@@ -185,27 +199,28 @@ public static class ControlOutlines
         return r;
     }
 
-    static Curve[] Outline(RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc)
+    static Curve[] Outline(RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc, bool wire = false)
     {
-        bool persp = vp.IsPerspectiveProjection;
+        bool persp = !wire && vp.IsPerspectiveProjection;
         string relKey = rel is { } r ? string.Join(",", Enumerable.Range(0, 12).Select(i => r[i / 4, i % 4].ToString("G9"))) : "";
-        var key = new Key(o.Id, o.RuntimeSerialNumber, relKey, persp, persp ? vp.CameraLocation : Point3d.Origin, persp ? Vector3d.Zero : vp.CameraDirection);
+        var key = new Key(o.Id, o.RuntimeSerialNumber, relKey, wire, persp, persp ? vp.CameraLocation : Point3d.Origin, persp || wire ? Vector3d.Zero : vp.CameraDirection);
         if (cache.TryGetValue(key, out var hit)) return hit;
-        Silhouette[]? s = null;
+        Curve[] curves = [];
         try
         {
             GeometryBase? g = o.Geometry;
             if (rel is { } t) g = Placement.Mapped(g, t); // deformable copy under non-uniform maps (fable #173)
             double tol = doc.ModelAbsoluteTolerance, angle = doc.ModelAngleToleranceRadians;
-            if (g != null)
-                s = persp ? Silhouette.Compute(g, Kinds, vp.CameraLocation, tol, angle)
-                          : Silhouette.Compute(g, Kinds, vp.CameraDirection, tol, angle);
+            if (wire && (g as Brep ?? (g as Extrusion)?.ToBrep()) is { } b)
+                curves = b.GetWireframe(-1) ?? [];
+            else if (!wire && g != null)
+                curves = (persp ? Silhouette.Compute(g, Kinds, vp.CameraLocation, tol, angle)
+                                : Silhouette.Compute(g, Kinds, vp.CameraDirection, tol, angle))?.Select(x => x.Curve).OfType<Curve>().ToArray() ?? [];
         }
         catch (Exception)
         {
             // Unsupported geometry: draw nothing rather than break the frame.
         }
-        var curves = s?.Select(x => x.Curve).OfType<Curve>().ToArray() ?? [];
         if (cache.Count > 4096) cache.Clear(); // stale cameras / deleted objects; a cheap bound
         cache[key] = curves;
         return curves;
