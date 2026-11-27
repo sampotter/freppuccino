@@ -127,7 +127,10 @@ public sealed class D3D11Backend : IGpuBackend
             for (int i = 0; i < rtvs.Length; i++) SafeRelease(ref rtvs[i]);
             bool has = dsv != IntPtr.Zero;
             SafeRelease(ref dsv);
-            return has;
+            Span<Viewport> vps = stackalloc Viewport[MaxViewports];
+            int nvp = RSGetViewports(ctx, vps);
+            int w = nvp > 0 ? (int)vps[0].Width : 0, h = nvp > 0 ? (int)vps[0].Height : 0;
+            return has && w > 0 && h > 0 && EnsureTargets(w, h);
         }
         catch (Exception ex) { LogOnce("expect:" + ex.GetType().Name, "Freppuccino D3D11: " + ex); return false; }
     }
