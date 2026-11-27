@@ -63,7 +63,7 @@ public static class FrepFieldBuilder
             for (int i = 0; i < terms.Count; i++)
             {
                 if (terms[i] is not { } t) continue;
-                var mode = i == 0 ? FrepMode.Add : n.ModeAt(i);
+                var mode = n.ModeAt(i);
                 if (run.Count == 0)
                 {
                     if (mode == FrepMode.Add) run.Add(t);

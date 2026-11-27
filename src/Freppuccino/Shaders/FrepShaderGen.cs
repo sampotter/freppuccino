@@ -301,7 +301,7 @@ public static class FrepShaderGen
             for (int i = 0; i < terms.Count; i++)
             {
                 if (terms[i] is not { } t) continue;
-                var mode = i == 0 ? FrepMode.Add : n.ModeAt(i);
+                var mode = n.ModeAt(i);
                 if (!started)
                 {
                     if (mode != FrepMode.Add) continue;
@@ -851,7 +851,7 @@ public static class FrepShaderGen
                 if (n.IsGroup)
                 {
                     for (int i = 0; i < n.Operands.Length; i++)
-                        if (i == 0 || n.ModeAt(i) != FrepMode.Subtract) b.Union(Of(n.Operands[i]));
+                        if (n.ModeAt(i) != FrepMode.Subtract) b.Union(Of(n.Operands[i]));
                 }
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && warp.TryGetValue(n.Id, out var w)) b = Warped(b, w);

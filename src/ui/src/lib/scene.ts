@@ -39,6 +39,20 @@ export const MODES: Record<RowMode, { label: string; icon: BrandIconName; tip: s
 }
 
 export const BASE_TIP = 'Base. The group starts from this row. Drag another row above it to change the base.'
+export const ROOT_TIP = 'Top level. Everything here is added together.'
+export const IDLE_TIPS: Partial<Record<RowMode, string>> = {
+  subtract: 'Nothing above this row to subtract from.',
+  intersect: 'Nothing above this row to intersect with.',
+}
+
+export function rowMode(parent: SceneNode, index: number): RowMode {
+  return parent.modes?.[index] ?? 'add'
+}
+
+export function rowIdle(parent: SceneNode, index: number): boolean {
+  if (rowMode(parent, index) === 'add') return false
+  return !(parent.children ?? []).slice(0, index).some((c, i) => rowMode(parent, i) === 'add' && c.visible && !c.missing)
+}
 
 /** Commands take the selected object / node, then ask for the line / box. Angles in degrees. */
 export const DEFORMS: Record<DeformKind, { label: string; icon: BrandIconName; command: AllowedCommand; params: Record<string, string> }> = {

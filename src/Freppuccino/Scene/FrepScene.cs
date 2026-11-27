@@ -381,7 +381,7 @@ public static class FrepScene
                 if (n.IsGroup)
                     for (int i = 0; i < n.Operands.Length; i++)
                     {
-                        if (i > 0 && n.ModeAt(i) != FrepMode.Add) continue;
+                        if (n.ModeAt(i) != FrepMode.Add) continue;
                         b.Union(Of(n.Operands[i]));
                     }
                 else foreach (var c in n.Operands) b.Union(Of(c));

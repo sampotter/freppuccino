@@ -560,7 +560,7 @@ public static partial class AiTools
     }
 
     static JsonArray ModeNames(FrepNode n) =>
-        new([.. Enumerable.Range(0, n.Operands.Length).Select(i => (JsonNode)(i == 0 ? "base" : ModeName(n.ModeAt(i))))]);
+        new([.. Enumerable.Range(0, n.Operands.Length).Select(i => (JsonNode)ModeName(n.ModeAt(i)))]);
 
     static string ModeName(FrepMode m) => m switch { FrepMode.Subtract => "subtract", FrepMode.Intersect => "intersect", _ => "add" };
 

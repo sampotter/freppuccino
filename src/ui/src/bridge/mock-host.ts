@@ -18,7 +18,7 @@ export function createMockHost(): Transport {
   })
   const group = (preset: OperationKind, k: number, children: SceneNode[]): SceneNode => ({
     ...opNode('group', k, children),
-    modes: children.map((_, i): RowMode => (preset === 'intersect' ? 'intersect' : preset === 'subtract' && i > 0 ? 'subtract' : 'add')),
+    modes: children.map((_, i): RowMode => (i === 0 ? 'add' : preset === 'intersect' ? 'intersect' : preset === 'subtract' ? 'subtract' : 'add')),
   })
   const prim = (sdfType: string, params: Record<string, number>, name?: string): SceneNode => ({
     id: id(), kind: 'primitive', sdfType, name, visible: true, locked: false, params, color: '#FCFCFC',

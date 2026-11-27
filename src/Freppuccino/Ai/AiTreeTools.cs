@@ -75,8 +75,8 @@ public static partial class AiTools
         var t = Tree(() => tree.WithModes([(node.Id, operand, mode)]));
         Mutate(doc, $"mode in {node.Name}", () => FrepTrees.Set(doc, t, $"AI: mode in {node.Name}"));
         var result = NodeSummary(doc, t, node.Id);
-        if (node.Operands.IndexOf(operand) == 0)
-            result["note"] = $"{OperandRef(doc, operand, null)} is the base (operands[0]) of {node.Name}: its mode is kept but only applies once another operand is moved above it";
+        if (mode != FrepMode.Add && !Enumerable.Range(0, node.Operands.IndexOf(operand)).Any(i => node.ModeAt(i) == FrepMode.Add))
+            result["note"] = $"nothing is added above {OperandRef(doc, operand, null)} in {node.Name}, so it has nothing to act on until an add operand comes before it";
         return result;
     }
 
@@ -124,6 +124,6 @@ public static partial class AiTools
         if (a.Operands.Length == 1 && b.Operands.Length > 1)
             notes.Add($"{a.Name} has one operand left, so it just passes it through");
         if (a.IsGroup && b.Operands.Length > 0 && a.Operands.Length > 0 && a.Operands[0] != b.Operands[0])
-            notes.Add($"{a.Name}'s base (operands[0]) is now {OperandRef(doc, a.Operands[0], null)}; every later operand applies its mode to the result so far");
+            notes.Add($"{a.Name}'s first operand is now {OperandRef(doc, a.Operands[0], null)} ({ModeName(a.ModeAt(0))}); every operand applies its mode to the result of the ones above it");
     }
 }

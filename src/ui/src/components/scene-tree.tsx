@@ -6,7 +6,7 @@ import { BlendHint } from '@/components/blend-hint'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { send, useHost } from '@/bridge/host'
-import { BASE_TIP, MODES } from '@/lib/scene'
+import { BASE_TIP, IDLE_TIPS, MODES, ROOT_TIP, rowIdle, rowMode } from '@/lib/scene'
 import type { Id, RowMode, SceneNode, SelectMode } from '@/bridge/protocol'
 
 type ModeRow = { parent: Id; child: Id }
@@ -18,7 +18,7 @@ function modeRows(scene: SceneNode[], selection: Set<Id>, clicked: ModeRow): Mod
   const walk = (nodes: SceneNode[]) =>
     nodes.forEach((n) => {
       n.children?.forEach((c, i) => {
-        if (n.op === 'group' && i > 0 && selection.has(c.id)) rows.set(`${n.id}/${c.id}`, { parent: n.id, child: c.id })
+        if (n.op === 'group' && (i > 0 || n.modes?.[i] !== 'add') && selection.has(c.id)) rows.set(`${n.id}/${c.id}`, { parent: n.id, child: c.id })
       })
       if (n.children) walk(n.children)
     })
@@ -319,7 +319,7 @@ function TreeRow(props: {
         className={cn(
           'group relative mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-sm pr-1 select-none hover:bg-accent/50',
           selected && 'bg-accent font-bold hover:bg-accent',
-          !node.visible && 'text-muted-foreground [&_[data-slot=brand-icon]]:opacity-40',
+          (!node.visible || (parent?.op === 'group' && rowIdle(parent, index))) && 'text-muted-foreground [&_[data-slot=brand-icon]]:opacity-40',
           node.missing && 'italic line-through',
           dnd.drag?.id === node.id && 'opacity-50',
           dropZone === 'into' && 'bg-accent/50 ring-2 ring-primary ring-inset',
@@ -393,8 +393,20 @@ function ModeCell(props: {
   onModeMenu: (at: DOMRect, row: ModeRow, current: RowMode, key: string) => void
 }) {
   const { node, parent, index } = props
-  if (parent?.op !== 'group') return <span aria-hidden className="w-[22px] shrink-0" />
-  if (index === 0)
+  if (!parent)
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span aria-label="Top level" className="grid size-[22px] shrink-0 place-items-center">
+            <span className="size-1.5 rounded-full border-[1.5px] border-muted-foreground opacity-60" />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-56">{ROOT_TIP}</TooltipContent>
+      </Tooltip>
+    )
+  if (parent.op !== 'group') return <span aria-hidden className="w-[22px] shrink-0" />
+  const mode = rowMode(parent, index)
+  if (index === 0 && mode === 'add')
     return (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -405,7 +417,7 @@ function ModeCell(props: {
         <TooltipContent side="bottom" className="max-w-56">{BASE_TIP}</TooltipContent>
       </Tooltip>
     )
-  const mode = parent.modes?.[index] ?? 'add'
+  const idle = rowIdle(parent, index)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -426,7 +438,7 @@ function ModeCell(props: {
           <BrandIcon name={MODES[mode].icon} className="size-[17px]" />
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom">{MODES[mode].tip}</TooltipContent>
+      <TooltipContent side="bottom">{(idle && IDLE_TIPS[mode]) || MODES[mode].tip}</TooltipContent>
     </Tooltip>
   )
 }
