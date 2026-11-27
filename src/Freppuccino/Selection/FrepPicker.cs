@@ -85,7 +85,11 @@ public sealed class FrepPicker : MouseCallback
                 if (rhino && PickRoot(doc, vp, client) == null) return;
                 leaf = PickInstance(doc, vp, client, out ambiguous);
             }
-            if (leaf == null && !ambiguous) return;
+            if (leaf == null && !ambiguous)
+            {
+                if (!rhino && HiddenCutterUnder(view, e.ViewportPoint)) e.Cancel = true;
+                return;
+            }
             e.Cancel = true;
             pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false, note);
             return;
@@ -106,6 +110,12 @@ public sealed class FrepPicker : MouseCallback
         }
         if (hit is not { } root)
         {
+            if (!rhino && HiddenCutterUnder(view, e.ViewportPoint))
+            {
+                e.Cancel = true;
+                if (sessions == 0) pending = new Pending(doc, null, null, false, Clear: true);
+                return;
+            }
             // Rhino deselects its own objects on an empty click, but node roots aren't Rhino objects. (Not in a session:
             // there an empty click goes to the running command.)
             if (sessions == 0) UiController_ClearNodes(doc);
@@ -115,7 +125,7 @@ public sealed class FrepPicker : MouseCallback
         pending = new Pending(doc, root, null, false);
     }
 
-    sealed record Pending(RhinoDoc Doc, FrepOperand? Root, FrepInstance? Leaf, bool Ambiguous, string? Note = null);
+    sealed record Pending(RhinoDoc Doc, FrepOperand? Root, FrepInstance? Leaf, bool Ambiguous, string? Note = null, bool Clear = false);
     Pending? pending;
     static (Point2d At, List<FrepInstance> Set, int Index)? cycle;
 
@@ -127,6 +137,13 @@ public sealed class FrepPicker : MouseCallback
         if (pending is not { } p || e.MouseButton != MouseButton.Left) return;
         pending = null;
         e.Cancel = true;
+        if (p.Clear)
+        {
+            p.Doc.Objects.UnselectAll();
+            UiController_ClearNodes(p.Doc);
+            p.Doc.Views.Redraw();
+            return;
+        }
         if (p.Ambiguous)
         {
             RhinoApp.WriteLine("Freppuccino: several shapes share that outline. Select the one you want in the Freppuccino panel's tree.");
@@ -290,6 +307,16 @@ public sealed class FrepPicker : MouseCallback
         pick.UpdateClippingPlanes();
         return view.Document.Objects.PickObjects(pick).Any(r => r.Object() is { } o && o is not FrepCarrier &&
             !ControlOutlines.IsControl(o) && !Commands.FrepMeshCommand.IsBaked(o));
+    }
+
+    static bool HiddenCutterUnder(RhinoView view, System.Drawing.Point at)
+    {
+        if (FrepDisplaySettings.Cutters != CutterDisplay.Hidden) return false;
+        using var pick = new Rhino.Input.Custom.PickContext { View = view, PickStyle = Rhino.Input.Custom.PickStyle.PointPick };
+        pick.SetPickTransform(view.ActiveViewport.GetPickTransform(at));
+        pick.UpdateClippingPlanes();
+        var cutters = ControlOutlines.CutterObjects(view.Document);
+        return view.Document.Objects.PickObjects(pick).Any(r => r.Object() is { } o && cutters.Contains(o.Id));
     }
 
     static void UiController_ClearNodes(RhinoDoc doc) => Ui.UiController.SetSelectedNodes(doc, []);

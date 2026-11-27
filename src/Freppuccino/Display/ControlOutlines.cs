@@ -23,7 +23,7 @@ public static class ControlOutlines
     public static System.Drawing.Color UnselectedColor => Unselected;
     public static int HiddenAlpha { get; set; } = 64;
 
-    readonly record struct Key(Guid Obj, uint Serial, string Rel, bool Wire, bool Persp, Point3d Eye, Vector3d Dir);
+    readonly record struct Key(Guid Obj, uint Serial, string Rel, int Wire, bool Persp, Point3d Eye, Vector3d Dir);
     static readonly Dictionary<Key, Curve[]> cache = [];
 
     /// Diagnostics: the placement (relative to the real brep) each instance outline was last drawn with.
@@ -203,7 +203,8 @@ public static class ControlOutlines
     {
         bool persp = !wire && vp.IsPerspectiveProjection;
         string relKey = rel is { } r ? string.Join(",", Enumerable.Range(0, 12).Select(i => r[i / 4, i % 4].ToString("G9"))) : "";
-        var key = new Key(o.Id, o.RuntimeSerialNumber, relKey, wire, persp, persp ? vp.CameraLocation : Point3d.Origin, persp || wire ? Vector3d.Zero : vp.CameraDirection);
+        int density = wire ? o.Attributes.WireDensity : -2;
+        var key = new Key(o.Id, o.RuntimeSerialNumber, relKey, density, persp, persp ? vp.CameraLocation : Point3d.Origin, persp || wire ? Vector3d.Zero : vp.CameraDirection);
         if (cache.TryGetValue(key, out var hit)) return hit;
         Curve[] curves = [];
         try
@@ -212,7 +213,7 @@ public static class ControlOutlines
             if (rel is { } t) g = Placement.Mapped(g, t); // deformable copy under non-uniform maps (fable #173)
             double tol = doc.ModelAbsoluteTolerance, angle = doc.ModelAngleToleranceRadians;
             if (wire && (g as Brep ?? (g as Extrusion)?.ToBrep()) is { } b)
-                curves = b.GetWireframe(-1) ?? [];
+                curves = b.GetWireframe(density) ?? [];
             else if (!wire && g != null)
                 curves = (persp ? Silhouette.Compute(g, Kinds, vp.CameraLocation, tol, angle)
                                 : Silhouette.Compute(g, Kinds, vp.CameraDirection, tol, angle))?.Select(x => x.Curve).OfType<Curve>().ToArray() ?? [];
