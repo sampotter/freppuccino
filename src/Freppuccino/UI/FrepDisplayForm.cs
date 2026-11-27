@@ -54,7 +54,7 @@ public sealed class FrepDisplayForm : Form
             e.Handled = true;
         };
 
-        Content = new TableLayout
+        var settings = new TableLayout
         {
             Spacing = new Eto.Drawing.Size(8, 8),
             Rows =
@@ -62,8 +62,14 @@ public sealed class FrepDisplayForm : Form
                 Row(FrepDisplaySettings.CuttersLabel, cutters),
                 Row(FrepDisplaySettings.OtherShapesLabel, others),
                 Row(FrepDisplaySettings.GeometryLabel, geometry),
-                new TableRow(null, new TableLayout { Spacing = new Eto.Drawing.Size(8, 0), Rows = { new TableRow(new TableCell(null, true), ok, cancel) } }),
             },
+        };
+        var buttons = new TableLayout { Rows = { new TableRow(ok, new TableCell(null, true), cancel) } };
+        Content = new StackLayout
+        {
+            Spacing = 12,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Items = { settings, buttons },
         };
         Shown += (_, _) => ok.Focus();
     }

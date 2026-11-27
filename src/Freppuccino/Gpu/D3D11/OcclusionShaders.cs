@@ -154,9 +154,10 @@ static class OcclusionShaders
         StructuredBuffer<float4> segs : register(t4);
         struct V { float4 pos : SV_Position; float3 world : WORLD; float side : SIDE; };
 
-        static const int ADDED_REACH = 2;
-        static const float ADDED_TOL = 1.5;
+        static const int ADDED_REACH = 3;
+        static const float ADDED_TOL = 2.5;
         static const float ADDED_SPAN = 64.0;
+        static const int ADDED_BEHIND = 2;
 
         float DepthOf(float3 p)
         {
@@ -182,7 +183,7 @@ static class OcclusionShaders
                 float4 S = gPos.Load(int3(c, 0));
                 if (!Surface(S)) continue;
                 float3 d = p - S.xyz;
-                if (dx == 0 && dy == 0 && dot(d, view) > tol) return true;
+                if (max(abs(dx), abs(dy)) <= ADDED_BEHIND && dot(d, view) > tol) return true;
                 float3 n = gNrm.Load(int3(c, 0)).xyz;
                 if (abs(dot(d, n)) < tol && length(d) < ADDED_SPAN * foot) return true;
             }
