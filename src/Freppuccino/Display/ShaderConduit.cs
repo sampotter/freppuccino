@@ -19,6 +19,9 @@ public sealed class ShaderConduit : DisplayConduit
     /// the badge sits just below it so long names never run into it. Logical px, y down.
     const int TitleClearance = 28;
     bool loggedFailure, loggedCap;
+    Guid? early;
+    bool earlyWroteDepth, earlyOwnOutlines;
+    int earlySerial = -1;
 
     static readonly Eto.Forms.UITimer spin = new() { Interval = 1.0 / 12 };
 
@@ -69,28 +72,80 @@ public sealed class ShaderConduit : DisplayConduit
     // Per doc (RuntimeSerialNumber): last scene program that drew.
     static readonly Dictionary<uint, ShaderSource> lastGood = [];
 
+    protected override void PreDrawObjects(DrawEventArgs e)
+    {
+        var dp = e.Display;
+        early = null;
+        earlyWroteDepth = false;
+        earlyOwnOutlines = false;
+        earlySerial = -1;
+        if (!FreppuccinoDisplayMode.IsActive(dp)) return;
+        TraceBegin(dp);
+        try
+        {
+            if (GpuBackends.For(dp) is not { } gpu || !WritesDepth(gpu, dp)) return;
+            bool own = OwnOutlinesPossible(gpu, dp);
+            int before = GBufferSerial(gpu);
+            var wrote = DrawModel(gpu, dp, e.RhinoDoc, cutters: own ? false : null, depth: true).WroteDepth;
+            int after = GBufferSerial(gpu);
+            earlyWroteDepth = wrote;
+            earlyOwnOutlines = own;
+            earlySerial = after > before ? after : -1;
+            early = dp.Viewport?.Id;
+            Trace(dp, "pre-after-early", early, wrote, frame: true);
+        }
+        catch (Exception ex)
+        {
+            if (!loggedFailure) RhinoApp.WriteLine("Freppuccino: " + ex);
+            loggedFailure = true;
+        }
+    }
+
+    (bool Drew, bool WroteDepth) DrawModel(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, bool? cutters, bool depth)
+    {
+        var scene = FrepScene.Get(doc);
+        if (scene.Dropped > 0 && !loggedCap)
+        {
+            RhinoApp.WriteLine($"Freppuccino: uniform budget full, {scene.Dropped} primitives not drawn");
+            loggedCap = true;
+        }
+        // Control outlines first, so blends drawn over them hide what they cover. Captures (AI screenshots,
+        // AiCapture.CleanCapture) show just the model.
+        if (!AiCapture.Active)
+        {
+            if (depth) dp.PushDepthWriting(false);
+            try
+            {
+                ControlOutlines.Draw(dp, doc, selected: false, cutters: cutters);
+                dp.Flush(); // Rhino batches curves; without this they land after (over) our GPU draw
+            }
+            finally
+            {
+                if (depth) dp.PopDepthWriting();
+            }
+        }
+        bool drew = scene.Program != null && DrawScene(gpu, dp, doc, scene, depth);
+        bool wrote = drew && DrewDepth(gpu);
+        if (drew) RhinoStateReset.Apply(dp);
+        return (drew, wrote);
+    }
+
     protected override void PostDrawObjects(DrawEventArgs e)
     {
         var dp = e.Display;
+        bool late = early != null && early == dp.Viewport?.Id, wroteDepth = late && earlyWroteDepth, own = late && earlyOwnOutlines;
+        int serial = late ? earlySerial : -1;
+        Trace(dp, late ? "post-entry" : "post-entry-no-pre", early, wroteDepth, frame: !late);
+        early = null;
         if (!FreppuccinoDisplayMode.IsActive(dp)) return;
         try
         {
             var gpu = GpuBackends.For(dp);
             if (gpu == null) return;
-            bool drew = false;
-
-            var scene = FrepScene.Get(e.RhinoDoc);
-            if (scene.Dropped > 0 && !loggedCap)
-            {
-                RhinoApp.WriteLine($"Freppuccino: uniform budget full, {scene.Dropped} primitives not drawn");
-                loggedCap = true;
-            }
-            // Control outlines first, so blends drawn over them hide what they cover. Captures (AI screenshots,
-            // AiCapture.CleanCapture) show just the model.
-            if (!AiCapture.Active) ControlOutlines.Draw(dp, e.RhinoDoc, selected: false);
-            dp.Flush(); // Rhino batches curves; without this they land after (over) our GPU draw
-            if (scene.Program != null)
-                drew |= DrawScene(gpu, dp, e.RhinoDoc, scene);
+            if (!late) TraceBegin(dp);
+            bool drew = !late && DrawModel(gpu, dp, e.RhinoDoc, null, depth: false).Drew;
+            if (!late) Trace(dp, "post-after-fallback", null, false);
+            if (!AiCapture.Active && own) DrawOwnOutlines(gpu, dp, e.RhinoDoc, serial, wroteDepth);
 
             if (!AiCapture.Active) // AI screenshots: just the model
             {
@@ -110,31 +165,82 @@ public sealed class ShaderConduit : DisplayConduit
     /// Draws the scene program. If it failed to compile, draws the doc's last good program instead, but only when it reads
     /// the uniforms the same way (same Layout: e.g. FFunction code edited, param count unchanged); else nothing. The error
     /// is reported by <see cref="ShaderError"/>; failed programs are not retried (backend cache).
-    static bool DrawScene(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, FrepSceneData scene)
+    static bool DrawScene(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, FrepSceneData scene, bool depth)
     {
         var program = scene.Program!;
         var uniforms = FrepShaderGen.SceneUniforms(dp.Viewport, scene, Selection.FrepSelection.Roots(doc));
-        if (DrawProgram(gpu, dp, program, uniforms))
+        if (DrawProgram(gpu, dp, program, uniforms, depth))
         {
             lastGood[doc.RuntimeSerialNumber] = program;
             return true;
         }
         if (gpu.CompileError(program) == null && !gpu.Building(program)) return false; // e.g. a pass we can't draw in
         return lastGood.TryGetValue(doc.RuntimeSerialNumber, out var good) && good.Hash != program.Hash &&
-               good.Layout.Length > 0 && good.Layout == program.Layout && DrawProgram(gpu, dp, good, uniforms);
+               good.Layout.Length > 0 && good.Layout == program.Layout && DrawProgram(gpu, dp, good, uniforms, depth);
     }
 
 #if RHINO9
-    static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms) =>
-        gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.DrawOccluded(dp, program, uniforms) : gpu.Draw(dp, program, uniforms);
+    static bool WritesDepth(IGpuBackend gpu, DisplayPipeline dp) => gpu is Gpu.D3D11.D3D11Backend d3d && d3d.ExpectsDepth(dp);
+
+    static bool DrewDepth(IGpuBackend gpu) => gpu is Gpu.D3D11.D3D11Backend { WroteDepth: true };
+
+    public static bool OwnOutlines { get; set; } = true;
+    static bool loggedOutlineSkip;
+    public static double OutlinePullPx { get; set; } = 0.0;
+
+    static bool OwnOutlinesPossible(IGpuBackend gpu, DisplayPipeline dp) => OwnOutlines && gpu is Gpu.D3D11.D3D11Backend d3d && d3d.OutlinesPossible(dp);
+
+    static int GBufferSerial(IGpuBackend gpu) => gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.GBufferSerial : 0;
+
+    static void DrawOwnOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, int serial, bool wroteDepth)
+    {
+        if (Gpu.D3D11.DepthTrace.Armed(dp)) Gpu.D3D11.DepthTrace.Reference(dp, gpu as Gpu.D3D11.D3D11Backend);
+        Trace(dp, "post-before-outlines", null, wroteDepth);
+        if (gpu is not Gpu.D3D11.D3D11Backend d3d || serial < 0 || !wroteDepth)
+        {
+            if (!loggedOutlineSkip) RhinoApp.WriteLine("Freppuccino: cutter outlines skipped this frame (no current G-buffer).");
+            loggedOutlineSkip = true;
+            return;
+        }
+        var endpoints = ControlOutlines.Segments(dp, doc, cutters: true);
+        d3d.DrawOutlines(dp, serial, endpoints, ControlOutlines.UnselectedColor, ControlOutlines.HiddenAlpha / 255f, (float)(0.5 * Math.Ceiling(dp.DpiScale - 1e-3)), (float)OutlinePullPx);
+        Trace(dp, "post-after-outlines", null, wroteDepth);
+    }
+
+    static void TraceBegin(DisplayPipeline dp) => Gpu.D3D11.DepthTrace.Begin(dp, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend);
+
+    static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false)
+    {
+        if (!Gpu.D3D11.DepthTrace.Armed(dp)) return;
+        if (frame) Gpu.D3D11.DepthTrace.Frame();
+        Gpu.D3D11.DepthTrace.Sample(dp, stage, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend, early, wrote);
+    }
+
+    static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms, bool depth) =>
+        gpu is Gpu.D3D11.D3D11Backend d3d ? d3d.DrawOccluded(dp, program, uniforms, depth) : gpu.Draw(dp, program, uniforms);
 #else
-    static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms) =>
+    static bool OwnOutlinesPossible(IGpuBackend gpu, DisplayPipeline dp) => false;
+
+    static int GBufferSerial(IGpuBackend gpu) => 0;
+
+    static void DrawOwnOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, int serial, bool wroteDepth) { }
+
+    static void TraceBegin(DisplayPipeline dp) { }
+
+    static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false) { }
+
+    static bool WritesDepth(IGpuBackend gpu, DisplayPipeline dp) => false;
+
+    static bool DrewDepth(IGpuBackend gpu) => false;
+
+    static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms, bool depth) =>
         gpu.Draw(dp, program, uniforms);
 #endif
 
     protected override void DrawForeground(DrawEventArgs e)
     {
         var dp = e.Display;
+        if (dp != null) Trace(dp, "fore", null, false);
         if (dp == null || AiCapture.Active || !FreppuccinoDisplayMode.IsActive(dp) || GpuBackends.For(dp) == null) return;
         try
         {

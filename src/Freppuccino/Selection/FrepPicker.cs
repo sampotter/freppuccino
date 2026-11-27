@@ -63,6 +63,7 @@ public sealed class FrepPicker : MouseCallback
 
         var vp = view.ActiveViewport;
         var client = new Point2d(e.ViewportPoint.X, e.ViewportPoint.Y);
+        bool rhino = RhinoUnder(view, e.ViewportPoint);
         if (e.ShiftKeyDown && sessions == 0)
         {
             // Leaf: the nearest control instance. A miss is left to Rhino (Shift+click = add to its selection).
@@ -79,7 +80,11 @@ public sealed class FrepPicker : MouseCallback
                 ambiguous = false;
                 note = $"Freppuccino: selected {Label(doc, leaf)}, {i + 1} of {shared.Count} shapes sharing that outline. Shift+click again for the next.";
             }
-            if (leaf == null && !ambiguous) leaf = PickInstance(doc, vp, client, out ambiguous);
+            if (leaf == null && !ambiguous)
+            {
+                if (rhino && PickRoot(doc, vp, client) == null) return;
+                leaf = PickInstance(doc, vp, client, out ambiguous);
+            }
             if (leaf == null && !ambiguous) return;
             e.Cancel = true;
             pending = ambiguous ? new Pending(doc, null, null, true) : new Pending(doc, null, leaf, false, note);
@@ -87,7 +92,7 @@ public sealed class FrepPicker : MouseCallback
         }
 
         var hit = PickOutline(doc, vp, client, rootsToo: true, out _, out _)?.Root ?? PickRoot(doc, vp, client);
-        if (hit == null)
+        if (hit == null && !rhino)
         {
             // An exposed control (e.g. a cutter's face outside the result) selects the root it belongs to.
             var inst = PickInstance(doc, vp, client, out var ambiguous);
@@ -275,6 +280,15 @@ public sealed class FrepPicker : MouseCallback
             if (March(f, box, r) is { } t) nearest = Math.Min(nearest ?? t, t);
             else missed = true;
         return missed ? nearest : null;
+    }
+
+    static bool RhinoUnder(RhinoView view, System.Drawing.Point at)
+    {
+        using var pick = new Rhino.Input.Custom.PickContext { View = view, PickStyle = Rhino.Input.Custom.PickStyle.PointPick };
+        pick.SetPickTransform(view.ActiveViewport.GetPickTransform(at));
+        pick.UpdateClippingPlanes();
+        return view.Document.Objects.PickObjects(pick).Any(r => r.Object() is { } o && o is not FrepCarrier &&
+            !ControlOutlines.IsControl(o) && !Commands.FrepMeshCommand.IsBaked(o));
     }
 
     static void UiController_ClearNodes(RhinoDoc doc) => Ui.UiController.SetSelectedNodes(doc, []);

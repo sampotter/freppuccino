@@ -20,6 +20,8 @@ public static class ControlOutlines
 {
     const SilhouetteType Kinds = SilhouetteType.Projecting | SilhouetteType.TangentProjects | SilhouetteType.Crease | SilhouetteType.Boundary;
     static readonly System.Drawing.Color Unselected = System.Drawing.Color.FromArgb(70, 70, 70);
+    public static System.Drawing.Color UnselectedColor => Unselected;
+    public static int HiddenAlpha { get; set; } = 64;
 
     readonly record struct Key(Guid Obj, uint Serial, string Rel, bool Persp, Point3d Eye, Vector3d Dir);
     static readonly Dictionary<Key, Curve[]> cache = [];
@@ -32,19 +34,22 @@ public static class ControlOutlines
     /// For DisplayConduit.PreDrawObject: hide control breps in Freppuccino-mode views.
     public static void Suppress(DrawObjectEventArgs e)
     {
-        if (FreppuccinoDisplayMode.IsActive(e.Display) && IsControl(e.RhinoObject)) e.DrawObject = false;
+        if (FreppuccinoDisplayMode.IsActive(e.Display) && (IsControl(e.RhinoObject) || Commands.FrepMeshCommand.IsBaked(e.RhinoObject))) e.DrawObject = false;
     }
 
     /// <paramref name="selected"/>: false = every unselected instance; true = the selected ones.
-    public static void Draw(DisplayPipeline dp, RhinoDoc doc, bool selected)
+    public static void Draw(DisplayPipeline dp, RhinoDoc doc, bool selected, bool? cutters = null, bool hidden = false)
     {
         var vp = dp.Viewport;
         var color = selected ? Rhino.ApplicationSettings.AppearanceSettings.SelectedObjectColor : Unselected;
+        if (hidden) color = System.Drawing.Color.FromArgb(HiddenAlpha, color);
         int thickness = selected ? 2 : 1;
         // Base instance transforms from the committed tree: FrepScene.Get's tree already carries a dragged root's preview
         // matrix, and the real brep still sits at its committed primary placement. Each preview is applied once below.
         var scene = Scene.FrepScene.Get(doc);
-        var (roots, instances) = FrepInstances.Compute(Csg.FrepTrees.Get(doc), scene.Ids);
+        var tree = Csg.FrepTrees.Get(doc);
+        var (roots, instances) = FrepInstances.Compute(tree, scene.Ids);
+        var cutterObjects = cutters == null ? [] : Cutters(tree, roots);
         var rootSet = roots.ToHashSet();
         var selectedLeaves = FrepSelection.Leaves(doc);
 
@@ -80,7 +85,7 @@ public static class ControlOutlines
             if (!byObject.TryGetValue(o.Id, out var list) || list.Count == 0)
             {
                 // Not reached by any visible root (e.g. under a hidden node): its brep as is (following its own drag).
-                if (objSelected == selected) Draw(dp, o, leafDrag.TryGetValue(o.Id, out var own) ? own : null, vp, doc, color, thickness);
+                if (objSelected == selected && cutters != true) Draw(dp, o, leafDrag.TryGetValue(o.Id, out var own) ? own : null, vp, doc, color, thickness);
                 continue;
             }
             var primary = list[0];
@@ -91,7 +96,7 @@ public static class ControlOutlines
                 // (picked through its path, or through its own instance carrier).
                 bool isSel = (objSelected && rootSet.Contains(FrepOperand.Object(o.Id))) ||
                     selectedLeaves.Any(l => l.SamePath(inst)); // by path: its T may carry a drag preview
-                if (isSel != selected) continue;
+                if (isSel != selected || (cutters is { } c && c != cutterObjects.Contains(inst.Object))) continue;
                 // The real brep B sits at the primary instance (B = T_p c); this instance shows T_inst c, previewed:
                 Transform eff;
                 if (inst.Root.IsNode && rootDrag.TryGetValue(inst.Root.NodeId, out var rx)) eff = rx * inst.T * primaryInv;
@@ -103,6 +108,26 @@ public static class ControlOutlines
                 Draw(dp, o, Placement.IsIdentity(eff, 1e-12) ? null : eff, vp, doc, color, thickness);
             }
         }
+    }
+
+    static HashSet<Guid> Cutters(Csg.FrepTree tree, List<FrepOperand> roots)
+    {
+        var byId = tree.Nodes.ToDictionary(n => n.Id);
+        var reached = new HashSet<int>();
+        var cut = new HashSet<FrepOperand>();
+        var result = new HashSet<Guid>();
+        void Visit(FrepOperand o, bool subtracted)
+        {
+            if (!o.IsNode)
+            {
+                if (subtracted) result.Add(o.ObjectId);
+                return;
+            }
+            if (!byId.TryGetValue(o.NodeId, out var n) || n.Hidden || !(subtracted ? cut.Add(o) : reached.Add(o.NodeId))) return;
+            for (int i = 0; i < n.Operands.Length; i++) Visit(n.Operands[i], subtracted || (n.Op == Csg.FrepOp.Difference && i > 0));
+        }
+        foreach (var r in roots) Visit(r, false);
+        return result;
     }
 
     public static List<(FrepInstance Instance, Curve[] Curves)> Pickable(RhinoDoc doc, RhinoViewport vp)
@@ -125,7 +150,39 @@ public static class ControlOutlines
 
     static void Draw(DisplayPipeline dp, RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc, System.Drawing.Color color, int thickness)
     {
+        if (sink != null) { sink.AddRange(Outline(o, rel, vp, doc)); return; }
         foreach (var c in Outline(o, rel, vp, doc)) dp.DrawCurve(c, color, thickness);
+    }
+
+    static List<Curve>? sink;
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Curve, float[]> segments = new();
+
+    public static float[] Segments(DisplayPipeline dp, RhinoDoc doc, bool cutters)
+    {
+        sink = [];
+        try { Draw(dp, doc, selected: false, cutters: cutters); }
+        finally { var got = sink; sink = null; collected = got; }
+        var parts = collected.Select(c => segments.GetValue(c, Endpoints)).ToList();
+        var all = new float[parts.Sum(p => p.Length)];
+        int at = 0;
+        foreach (var p in parts) { p.CopyTo(all, at); at += p.Length; }
+        return all;
+    }
+
+    static List<Curve> collected = [];
+
+    static float[] Endpoints(Curve c)
+    {
+        Point3d[] pts = c.TryGetPolyline(out var pl) ? [.. pl]
+            : c.ToPolyline(0, 0, Math.PI / 90, 0, 0, 0, 0, 0, true)?.ToPolyline() is { } q ? [.. q] : [];
+        var r = new float[Math.Max(0, pts.Length - 1) * 8];
+        for (int i = 0; i + 1 < pts.Length; i++)
+        {
+            var a = pts[i]; var b = pts[i + 1];
+            r[i * 8] = (float)a.X; r[i * 8 + 1] = (float)a.Y; r[i * 8 + 2] = (float)a.Z; r[i * 8 + 3] = 1;
+            r[i * 8 + 4] = (float)b.X; r[i * 8 + 5] = (float)b.Y; r[i * 8 + 6] = (float)b.Z; r[i * 8 + 7] = 1;
+        }
+        return r;
     }
 
     static Curve[] Outline(RhinoObject o, Transform? rel, RhinoViewport vp, RhinoDoc doc)

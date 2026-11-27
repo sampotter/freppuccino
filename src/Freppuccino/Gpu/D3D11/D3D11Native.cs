@@ -155,6 +155,17 @@ static unsafe class D3D11Native
         rs = hr < 0 ? IntPtr.Zero : r; return hr;
     }
 
+    public static int CreateBlendState(IntPtr dev, in BlendDesc d, out IntPtr bs)
+    {
+        IntPtr r = IntPtr.Zero;
+        int hr;
+        fixed (BlendDesc* p = &d) hr = ((delegate* unmanaged<IntPtr, BlendDesc*, IntPtr*, int>)Vt(dev)[20])(dev, p, &r);
+        bs = r;
+        return hr;
+    }
+
+    public static void VSSetShaderResource(IntPtr c, uint slot, IntPtr view) => ((delegate* unmanaged<IntPtr, uint, uint, IntPtr*, void>)Vt(c)[25])(c, slot, 1, &view);
+
     public static int CreateDepthStencilState(IntPtr dev, in DepthStencilDesc d, out IntPtr dss)
     {
         IntPtr r; int hr;
@@ -315,6 +326,33 @@ static unsafe class D3D11Native
 }
 
 [StructLayout(LayoutKind.Sequential)]
+unsafe struct BlendDesc
+{
+    public int AlphaToCoverageEnable, IndependentBlendEnable;
+    public fixed int RenderTarget[64];
+
+    public static BlendDesc Alpha
+    {
+        get
+        {
+            var d = new BlendDesc();
+            for (int i = 0; i < 8; i++)
+            {
+                d.RenderTarget[i * 8 + 0] = i == 0 ? 1 : 0;
+                d.RenderTarget[i * 8 + 1] = 5;
+                d.RenderTarget[i * 8 + 2] = 6;
+                d.RenderTarget[i * 8 + 3] = 1;
+                d.RenderTarget[i * 8 + 4] = 2;
+                d.RenderTarget[i * 8 + 5] = 6;
+                d.RenderTarget[i * 8 + 6] = 1;
+                d.RenderTarget[i * 8 + 7] = 0xf;
+            }
+            return d;
+        }
+    }
+}
+
+[StructLayout(LayoutKind.Sequential)]
 struct Viewport { public float X, Y, Width, Height, MinDepth, MaxDepth; }
 
 /// D3D11_BUFFER_DESC (24 bytes)
@@ -376,5 +414,12 @@ struct DepthStencilDesc
             var op = new StencilOpDesc { FailOp = 1, DepthFailOp = 1, PassOp = 1, Func = 8 };
             return new() { DepthEnable = 0, DepthWriteMask = 0, DepthFunc = 8, StencilEnable = 0, StencilReadMask = 0xff, StencilWriteMask = 0xff, FrontFace = op, BackFace = op };
         }
+    }
+
+    public static DepthStencilDesc Test(int func)
+    {
+        var d = Disabled;
+        d.DepthEnable = 1; d.DepthWriteMask = 1; d.DepthFunc = func;
+        return d;
     }
 }
