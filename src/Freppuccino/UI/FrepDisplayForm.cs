@@ -30,6 +30,7 @@ public sealed class FrepDisplayForm : Form
     {
         Title = "Freppuccino Display";
         Resizable = false;
+        AutoSize = true;
         Minimizable = false;
         Maximizable = false;
         ShowInTaskbar = false;
@@ -42,9 +43,9 @@ public sealed class FrepDisplayForm : Form
         geometry.SelectedIndexChanged += (_, _) => { if (geometry.SelectedIndex >= 0) FrepDisplaySettings.Geometry = (GeometryDisplay)geometry.SelectedIndex; };
         FrepDisplaySettings.Changed += Sync;
 
-        var ok = new Button { Text = "OK" };
+        var ok = new Button { Text = "OK", Width = ButtonWidth };
         ok.Click += (_, _) => Accept();
-        var cancel = new Button { Text = "Cancel" };
+        var cancel = new Button { Text = "Cancel", Width = ButtonWidth };
         cancel.Click += (_, _) => Close();
         KeyDown += (_, e) =>
         {
@@ -64,14 +65,45 @@ public sealed class FrepDisplayForm : Form
                 Row(FrepDisplaySettings.GeometryLabel, geometry),
             },
         };
-        var buttons = new TableLayout { Rows = { new TableRow(ok, new TableCell(null, true), cancel) } };
+        var buttons = new TableLayout { Padding = new Eto.Drawing.Padding(0, Gap, 0, 0), Rows = { new TableRow(ok, new TableCell(null, true), cancel) } };
         Content = new StackLayout
         {
-            Spacing = 12,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Items = { settings, buttons },
+            Items = { settings, failure, buttons },
         };
         Shown += (_, _) => ok.Focus();
+        Closing += (_, e) =>
+        {
+            if (keep || Restore()) return;
+            e.Cancel = true;
+            failure.Visible = true;
+            Sync();
+        };
+    }
+
+    const int ButtonWidth = 90, Gap = 12;
+
+    readonly Panel failure = new()
+    {
+        Padding = new Eto.Drawing.Padding(0, Gap, 0, 0),
+        Content = new Label { Text = "Couldn't restore the previous settings.\nChoose Cancel to try again, or OK to keep what's shown." },
+        Visible = false,
+    };
+
+    bool Restore()
+    {
+        try
+        {
+            FrepDisplaySettings.Geometry = atOpen.Geometry;
+            if (FrepDisplaySettings.Geometry != atOpen.Geometry) return false;
+            FrepDisplaySettings.Cutters = atOpen.Cutters;
+            FrepDisplaySettings.OtherShapes = atOpen.Others;
+            return FrepDisplaySettings.Cutters == atOpen.Cutters && FrepDisplaySettings.OtherShapes == atOpen.Others;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     static TableRow Row(string label, DropDown choices) =>
@@ -94,12 +126,6 @@ public sealed class FrepDisplayForm : Form
     {
         FrepDisplaySettings.Changed -= Sync;
         open = null;
-        if (!keep)
-        {
-            FrepDisplaySettings.Cutters = atOpen.Cutters;
-            FrepDisplaySettings.OtherShapes = atOpen.Others;
-            FrepDisplaySettings.Geometry = atOpen.Geometry;
-        }
         base.OnClosed(e);
     }
 
