@@ -75,12 +75,14 @@ public sealed class ShaderConduit : DisplayConduit
     {
         var dp = e.Display;
         early = null;
+        earlyWroteDepth = false;
         if (!FreppuccinoDisplayMode.IsActive(dp)) return;
         try
         {
             if (GpuBackends.For(dp) is not { } gpu || !WritesDepth(gpu, dp)) return;
+            var wrote = DrawModel(gpu, dp, e.RhinoDoc, cutters: false, depth: true).WroteDepth;
+            earlyWroteDepth = wrote;
             early = dp.Viewport?.Id;
-            earlyWroteDepth = DrawModel(gpu, dp, e.RhinoDoc, cutters: false, depth: true).WroteDepth;
         }
         catch (Exception ex)
         {
