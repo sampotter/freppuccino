@@ -102,6 +102,8 @@ public static unsafe class DepthTrace
 
     public static bool Armed(DisplayPipeline dp) => viewport != null && dp.Viewport?.Id == viewport;
 
+    public static bool Recording => viewport != null;
+
     public static void Arm(RhinoViewport vp)
     {
         viewport = vp.Id;
