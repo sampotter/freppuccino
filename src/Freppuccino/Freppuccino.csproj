@@ -8,7 +8,7 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableDynamicLoading>true</EnableDynamicLoading>
-    <Version>0.1.4</Version>
+    <Version>0.2.0</Version>
     <Title>Freppuccino</Title>
     <Description>Freppuccino Rhino plugin</Description>
     <NoWarn>$(NoWarn);NU1701</NoWarn>
