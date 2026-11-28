@@ -73,6 +73,14 @@ public static class FrepPrimitives
         return brep;
     }
 
+    public static bool PlaceBrep(RhinoDoc doc, Guid id, Brep brep)
+    {
+        var primary = Selection.FrepSelection.Structure(doc).Instances.FirstOrDefault(i => i.Object == id);
+        if (primary == null || Placement.IsIdentity(primary.T)) return true;
+        if (primary.T.SimilarityType == TransformSimilarityType.NotSimilarity && !brep.MakeDeformable()) return false;
+        return brep.Transform(primary.T);
+    }
+
     /// world = o + B · Rᵀ (x − o): frame coordinates re-mapped through the canonical-to-world columns.
     static Transform FrameToBasis(Plane f, Sdf.SdfBasis b)
     {
@@ -149,6 +157,11 @@ public static class FrepPrimitives
     public static void Replace(RhinoDoc doc, RhinoObject obj, SdPrimitive p, string? name = null, System.Drawing.Color? color = null)
     {
         var brep = CreateBrep(p, doc.ModelAbsoluteTolerance) ?? throw new InvalidOperationException($"couldn't build {p.Kind} geometry");
+        if (!PlaceBrep(doc, obj.Id, brep))
+        {
+            brep.Dispose();
+            throw new InvalidOperationException("couldn't place the object's geometry");
+        }
         var attributes = obj.Attributes.Duplicate();
         if (name != null) attributes.Name = name;
         WriteSdf(attributes, p, doc.ModelUnitSystem);
