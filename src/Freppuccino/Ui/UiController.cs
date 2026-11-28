@@ -726,6 +726,14 @@ public sealed class UiController : IDisposable
             return;
         }
 
+        if (!Scene.FrepPrimitives.PlaceBrep(doc, id, brep))
+        {
+            brep.Dispose();
+            if (!request.Preview) web.Send(new NoticeMessage("warning", "Couldn't place the primitive in its group."));
+            if (!request.Preview) EndParamGesture(doc);
+            return;
+        }
+
         if (request.Preview)
         {
             if (paramEdit == null)
