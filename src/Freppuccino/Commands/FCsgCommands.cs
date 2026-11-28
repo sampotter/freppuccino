@@ -49,9 +49,9 @@ public abstract class FCsgCommand : FrepNodeCommand
         {
             if (Op == FrepOp.Difference)
             {
-                rc = Pick(doc, "Base object or node", false, false, go => go.AddOptionDouble("Blend", ref k), operands);
+                rc = Pick(doc, "Base object or node", false, false, go => go.AddOptionDouble("Blend", ref k), operands, rootOperands: true);
                 if (rc == Result.Success)
-                    rc = Pick(doc, "Objects or nodes to subtract", true, false, go => go.AddOptionDouble("Blend", ref k), operands);
+                    rc = Pick(doc, "Objects or nodes to subtract", true, false, go => go.AddOptionDouble("Blend", ref k), operands, rootOperands: true);
             }
             else
             {
@@ -59,7 +59,7 @@ public abstract class FCsgCommand : FrepNodeCommand
                 rc = operands.Count >= 2 && doc.Objects.GetSelectedObjects(false, false).All(o => !IsSdf(o))
                     ? Result.Success
                     : Pick(doc, "Objects or nodes to " + (Op == FrepOp.Union ? "union" : "intersect"), true, true,
-                        go => go.AddOptionDouble("Blend", ref k), operands);
+                        go => go.AddOptionDouble("Blend", ref k), operands, rootOperands: true);
             }
         }
         finally { EndPicking(); }
@@ -88,10 +88,13 @@ public abstract class FrepNodeCommand : Command
     protected static void BeginPicking() => Picking = true;
     protected static void EndPicking() => Picking = false;
 
+    internal static FrepOperand RootOperand(RhinoDoc doc, Guid id) =>
+        Selection.FrepSelection.InstanceOf(doc, id)?.Root ?? FrepOperand.Object(id);
+
     protected static bool IsSdf(RhinoObject? o) => o != null && SdfUserText.ReadType(o.Attributes) != null;
 
     /// Appends picks to <paramref name="into"/> (deduped). Node names may be typed/clicked repeatedly; picking objects or Enter ends.
-    protected static Result Pick(RhinoDoc doc, string prompt, bool many, bool preselect, Action<GetObject> options, List<FrepOperand> into)
+    protected static Result Pick(RhinoDoc doc, string prompt, bool many, bool preselect, Action<GetObject> options, List<FrepOperand> into, bool rootOperands = false)
     {
         var tree = FrepTrees.Get(doc);
         var go = new GetObject();
@@ -129,7 +132,11 @@ public abstract class FrepNodeCommand : Command
                     if (!many) return Result.Success;
                     continue;
                 case GetResult.Object:
-                    for (int i = 0; i < go.ObjectCount; i++) Add(FrepOperand.Object(go.Object(i).ObjectId));
+                    for (int i = 0; i < go.ObjectCount; i++)
+                    {
+                        var objectId = go.Object(i).ObjectId;
+                        Add(rootOperands ? RootOperand(doc, objectId) : FrepOperand.Object(objectId));
+                    }
                     return Result.Success;
                 case GetResult.Nothing:
                     return Result.Success;
