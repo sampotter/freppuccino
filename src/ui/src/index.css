@@ -3,7 +3,7 @@
 @import "shadcn/tailwind.css";
 
 /*
-  FRepuccino brand kit (brand-kit/tokens.json) mapped onto shadcn's variables.
+  FReppuccino brand kit (brand-kit/tokens.json) mapped onto shadcn's variables.
   Themes: Latte (light) and Espresso (dark); the host picks one to match Rhino.
   Fonts are bundled from brand-kit/fonts (copied to src/brand/fonts).
 */

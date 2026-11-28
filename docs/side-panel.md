@@ -11,7 +11,7 @@ src/Freppuccino/Ui/
   UiProtocol.cs      message types  ◄── keep in sync ──►  src/ui/src/bridge/protocol.ts
   PrimitiveProxy.cs  setParam: validates + writes SDF.<name>, rebuilds the proxy brep
   UserFnView.cs      FFunction (sdUser) user text → compiled userFn payload
-src/ui/              Vite + React 19 + TypeScript + Tailwind 4 + shadcn/ui (radix), styled with the FRepuccino brand kit
+src/ui/              Vite + React 19 + TypeScript + Tailwind 4 + shadcn/ui (radix), styled with the FReppuccino brand kit
   src/brand/         fonts, command icons, wordmark copied from brand-kit/ (icons recoloured: ink → currentColor)
   src/index.css      brand tokens (brand-kit/tokens.json) mapped onto shadcn's CSS variables; Latte / Espresso themes
   src/bridge/        host.ts (transport + store + useHost), mock-host.ts (fake Rhino for the browser)
