@@ -110,7 +110,7 @@ export default function App() {
         {/* Wordmark: ink = currentColor, "FRep" = --wordmark-accent (caramel / caramel-ink per theme) */}
         <span
           role="img"
-          aria-label="FRepuccino"
+          aria-label="FReppuccino"
           className={cn('h-4 shrink-0 text-ink [&>svg]:h-full [&>svg]:w-auto', fit === 3 && 'hidden')}
           dangerouslySetInnerHTML={{ __html: wordmark }}
         />
