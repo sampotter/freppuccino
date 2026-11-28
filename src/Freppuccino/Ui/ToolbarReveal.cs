@@ -17,31 +17,35 @@ static class ToolbarReveal
         var reveal = !plugin.Settings.GetBool(ShownKey, false);
         var installed = InstalledRui(plugin);
         var attempts = 0;
+        string? failure = installed == null ? "Freppuccino.rui is missing next to the plug-in" : null;
         void OnIdle(object? sender, EventArgs e)
         {
             attempts++;
-            var done = attempts >= MaxAttempts;
+            var done = false;
             try
             {
                 var file = Find();
-                if (file == null && attempts == OpenAfter && installed != null)
+                if (file == null && installed != null && attempts % OpenAfter == 0)
                 {
                     file = RhinoApp.ToolbarFiles.Open(installed);
-                    RhinoApp.WriteLine(file == null
-                        ? $"Freppuccino: could not open toolbar file {installed}."
-                        : "Freppuccino: toolbar file was not loaded; opened it.");
-                    if (file == null) done = true;
+                    if (file == null) failure = $"opening {installed} failed";
+                    else RhinoApp.WriteLine("Freppuccino: toolbar file was not loaded; opened it.");
                 }
                 if (file != null)
                 {
-                    done = true;
-                    if (reveal && Reveal(file)) plugin.Settings.SetBool(ShownKey, true);
+                    failure = null;
+                    done = !reveal || Reveal(file);
+                    if (reveal && done) plugin.Settings.SetBool(ShownKey, true);
                 }
             }
             catch (Exception ex)
             {
-                RhinoApp.WriteLine($"Freppuccino: toolbar check failed ({ex.Message}).");
+                failure = ex.Message;
+            }
+            if (!done && attempts >= MaxAttempts)
+            {
                 done = true;
+                if (failure != null) RhinoApp.WriteLine($"Freppuccino: toolbar file not loaded ({failure}).");
             }
             if (done) RhinoApp.Idle -= OnIdle;
         }
