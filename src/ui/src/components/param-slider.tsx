@@ -2,6 +2,7 @@ import { useId, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 /**
  * Label + numeric field + slider. onChange fires while dragging (use for cheap live updates),
@@ -22,6 +23,8 @@ export function ParamSlider(props: {
   disabled?: boolean
   onChange?: (value: number) => void
   onCommit?: (value: number) => void
+  wrapInput?: (input: React.ReactElement) => React.ReactElement
+  onMaxChange?: (max: number) => void
 }) {
   const { min = 0, step = 0.01 } = props
   const id = useId()
@@ -59,16 +62,18 @@ export function ParamSlider(props: {
           {props.label}
         </Label>
         <div className="flex items-center gap-1.5">
-          <Input
-            id={id}
-            inputMode="decimal"
-            value={text}
-            disabled={props.disabled}
-            onChange={(e) => setText(e.target.value)}
-            onBlur={commitText}
-            onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
-            className="type-numeric h-7 w-16 px-1.5 text-right"
-          />
+          {(props.wrapInput ?? ((input) => input))(
+            <Input
+              id={id}
+              inputMode="decimal"
+              value={text}
+              disabled={props.disabled}
+              onChange={(e) => setText(e.target.value)}
+              onBlur={commitText}
+              onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+              className="type-numeric h-7 w-16 px-1.5 text-right"
+            />,
+          )}
           {props.units && <span className="type-numeric w-8 text-muted-foreground">{abbreviate(props.units)}</span>}
         </div>
       </div>
@@ -92,7 +97,44 @@ export function ParamSlider(props: {
           })
         }
       />
+      {props.onMaxChange && (
+        <div className="type-numeric -mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+          <span>{format(min)}</span>
+          <MaxField value={props.max} onCommit={props.onMaxChange} />
+        </div>
+      )}
     </div>
+  )
+}
+
+function MaxField(props: { value: number; onCommit: (v: number) => void }) {
+  const [text, setText] = useState(format(props.value))
+  const [shown, setShown] = useState(props.value)
+  if (props.value !== shown) {
+    setShown(props.value)
+    setText(format(props.value))
+  }
+  const commit = () => {
+    const v = Number(text)
+    if (!Number.isFinite(v) || v <= 0) return setText(format(props.value))
+    props.onCommit(v)
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <input
+          inputMode="decimal"
+          aria-label="Slider maximum"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          className="h-5 w-14 rounded-sm border border-transparent bg-transparent px-1 text-right text-muted-foreground outline-none hover:border-input focus:border-input focus:bg-card focus:text-foreground"
+        />
+      </TooltipTrigger>
+      <TooltipContent side="bottom">Slider maximum. Click to change.</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -102,4 +144,4 @@ const UNIT_ABBREVIATIONS: Record<string, string> = {
   Millimeters: 'mm', Centimeters: 'cm', Meters: 'm', Kilometers: 'km', Microns: 'µm',
   Inches: 'in', Feet: 'ft', Yards: 'yd', Miles: 'mi',
 }
-const abbreviate = (units: string) => UNIT_ABBREVIATIONS[units] ?? units
+export const abbreviate = (units: string) => UNIT_ABBREVIATIONS[units] ?? units

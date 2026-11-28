@@ -34,6 +34,11 @@ public class FrepMeshCommand : Command
 
     public override string EnglishName => "FrepMesh";
 
+    public const string BakedKey = "Freppuccino.Baked";
+
+    public static bool IsBaked(Rhino.DocObjects.RhinoObject? o) =>
+        o is Rhino.DocObjects.MeshObject && (o.Attributes.GetUserString(BakedKey) != null || o.Attributes.Name == "FrepMesh");
+
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         if (running)
@@ -202,6 +207,7 @@ public class FrepMeshCommand : Command
 
         var attributes = doc.CreateDefaultAttributes();
         attributes.Name = name;
+        attributes.SetUserString(BakedKey, "1");
         var id = doc.Objects.AddMesh(mesh, attributes);
         if (id == Guid.Empty)
         {

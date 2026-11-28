@@ -10,7 +10,7 @@ namespace Freppuccino.Ui;
 [Guid("3f6c1b52-8e4a-4d7f-b0a9-6d2e91c47a38")]
 public class FrepPanel : Panel
 {
-    public const string Caption = "Freppuccino";
+    public static readonly string Caption = $"FReppuccino (v{typeof(FrepPanel).Assembly.GetName().Version?.ToString(3)})";
 
     readonly WebViewHost web;
     readonly UiController controller;
@@ -21,6 +21,7 @@ public class FrepPanel : Panel
         web = new WebViewHost();
         controller = new UiController(web);
         Content = web.Control;
+        web.ControlReplaced += () => Content = web.Control;
     }
 
     protected override void Dispose(bool disposing)

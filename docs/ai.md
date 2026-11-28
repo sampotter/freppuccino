@@ -43,7 +43,7 @@ src/Freppuccino/Scene/FrepPrimitives.cs   SdPrimitive → SDF.* user text + prox
 ```
 
 Tools: `get_scene`, `create_primitive`, `update_primitive`, `transform`, `combine`, `deform`, `edit_operation`, `add_operand`,
-`remove_operand`, `move`, `delete`, `wrap`, `unwrap`, `set_color`, `set_visible`, `select`, `clear_scene`, `capture_views`, `mesh`,
+`remove_operand`, `move`, `set_mode`, `delete`, `wrap`, `unwrap`, `set_color`, `set_visible`, `select`, `clear_scene`, `capture_views`, `mesh`,
 `set_zebra`, the FFunction tools below, `load_skill` and `get_function_example` (the last two run in the panel, not in Rhino).
 Objects are addressed by name (unique names are enforced), GUID, or node name (`N3`). `get_scene` also reports the user's
 selection, so "make this taller" works.
@@ -61,11 +61,12 @@ command or a panel action.
 | FFunction (user SDF code) | `FFunction`, Create tile, **Script tab** | `create_function`, `set_function_code`, `get_function`, `check_function_code` |
 | FFunction params, Lipschitz | inspector / Script tab sliders | `set_function_params` |
 | FFunction example library (`examples/ffunction/`) | Script tab → Examples | `get_function_example` |
-| Union / subtract / intersect + blend k | `FUnion` `FDifference` `FIntersect`, Combine section | `combine`, `edit_operation` |
-| Restructure the tree | (AI only; users re-run the CSG commands) | `add_operand`, `remove_operand`, `move` |
+| Group with union / subtract / intersect preset + blend k | `FUnion` `FDifference` `FIntersect`, Combine section | `combine`, `edit_operation` |
+| Add / subtract / intersect per row | Tree mode button | `set_mode`, `add_operand mode=`, `move mode=` |
+| Restructure the tree | Tree drag and drop | `add_operand`, `remove_operand`, `move` |
 | Twist / bend / repeat | `FTwist` `FBend` `FRepeat`, Deform tiles | `deform`, `edit_operation` |
 | Blend a repeat's copies | Deform → Blend | `wrap op=blend`, `edit_operation k` |
-| Offset a CSG node (signed) | Deform → Offset | `wrap op=offset`, `edit_operation k` (may be negative) |
+| Offset a group (signed) | Deform → Offset | `wrap op=offset`, `edit_operation k` (may be negative) |
 | Unwrap a node / delete a subtree | Unwrap / Delete buttons | `unwrap` / `delete recursive` |
 | Selection | click in viewport / browser | read: `get_scene.selection`; write: `select` |
 | Bake to mesh | `FrepMesh` | `mesh` |

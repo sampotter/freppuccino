@@ -3,7 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { Slot } from "radix-ui"
 
-// FRepuccino brand: primary = caramel "sticker" (2px ink border + hard offset shadow that presses down);
+// FReppuccino brand: primary = caramel "sticker" (2px ink border + hard offset shadow that presses down);
 // secondary/outline use control-border; 32px control height; labels are body-strong (800).
 const buttonVariants = cva(
   "group/button inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent font-extrabold whitespace-nowrap transition-[background-color,box-shadow,translate] outline-none select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",

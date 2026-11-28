@@ -109,12 +109,15 @@ export const TOOLS: ToolDef[] = [
   ),
   tool(
     'combine',
-    'Creates a CSG operation node from ≥ 2 operands (primitive refs or node refs). union: merge; subtract: operands[0] minus all ' +
-      'the others; intersect: the overlap. k = blend radius in model units (0 = sharp edge, > 0 = smooth fillet-like blend). ' +
+    'Creates a group node from ≥ 2 operands (primitive refs or node refs). A group reads top to bottom: operands[0] is the ' +
+      'base (added), and every operand applies its mode (add, subtract or intersect) to the result of the ones above it; a ' +
+      'subtract or intersect operand with nothing added above it does nothing. op picks the modes: ' +
+      'union = all add; subtract = operands[0] minus all the others; intersect = all intersect. Change single rows later with ' +
+      'set_mode. k = blend radius in model units (0 = sharp edge, > 0 = smooth fillet-like blend) for every join in the group. ' +
       'Operands are consumed: only roots are drawn. Returns the node ref (N#).',
     {
       op: { type: 'string', enum: ['union', 'subtract', 'intersect'] },
-      operands: refs('primitive or node refs; for subtract the first is the target'),
+      operands: refs('primitive or node refs; the first is the base (always add)'),
       k: { type: 'number', description: 'blend radius, ≥ 0 (default 0)' },
     },
     ['op', 'operands'],
@@ -137,8 +140,8 @@ export const TOOLS: ToolDef[] = [
   ),
   tool(
     'edit_operation',
-    "Changes an operation node: a CSG node's op and/or blend k, a deform node's fields (omitted fields keep their value; " +
-      "a deform can't change its op), or an offset / blend node's k (offset k may be negative: shrinks).",
+    "Changes an operation node: a group's blend k (op resets all its modes to that preset), a deform node's fields (omitted " +
+      "fields keep their value; a deform can't change its op), or an offset / blend node's k (offset k may be negative: shrinks).",
     {
       ref: { type: 'string', description: 'node ref, e.g. "N3"' },
       op: { type: 'string', enum: ['union', 'subtract', 'intersect'] },
@@ -149,12 +152,14 @@ export const TOOLS: ToolDef[] = [
   ),
   tool(
     'add_operand',
-    'Adds a primitive or node to an existing CSG node (at index, default the end; for subtract, index 0 makes it the target). ' +
-      'Deforms take exactly one operand: use move to swap it. Cycles and duplicates are rejected.',
+    'Adds a primitive or node to an existing group (at index, default the end; index 0 makes it the base, mode add) with a mode ' +
+      '(default add). Order matters: each operand combines with the operands above it. Deforms take exactly one operand: use ' +
+      'move to swap it. Cycles and duplicates are rejected.',
     {
-      node: { type: 'string', description: 'CSG node ref, e.g. "N3"' },
+      node: { type: 'string', description: 'group node ref, e.g. "N3"' },
       operand: { type: 'string', description: 'primitive or node ref to add' },
       index: { type: 'integer', description: 'position in the operand list (optional)' },
+      mode: { type: 'string', enum: ['add', 'subtract', 'intersect'] },
     },
     ['node', 'operand'],
   ),
@@ -168,15 +173,31 @@ export const TOOLS: ToolDef[] = [
   tool(
     'move',
     'Re-parents a primitive or node: detaches it from "from" (default: every operation using it) and inserts it into "to" at ' +
-      'index (default end). Omit "to" (or null) to make it a root. from = to reorders. Into a deform: replaces its target. ' +
+      'index (default end). Omit "to" (or null) to make it a root. from = to reorders, which changes the shape (operands ' +
+      'combine top to bottom). It keeps its mode from the group it left; without "from" it keeps it only if every group it ' +
+      'left gave it the same mode, otherwise it arrives as add. mode overrides that, except at index 0, which is always ' +
+      'add. Into a deform: replaces its target. ' +
       'Restructure with this instead of deleting and rebuilding.',
     {
       item: { type: 'string', description: 'primitive or node ref to move' },
       to: { type: 'string', description: 'destination node ref; omit to make it a root' },
       from: { type: 'string', description: 'detach only from this node (optional)' },
       index: { type: 'integer', description: 'position in the destination operand list (optional)' },
+      mode: { type: 'string', enum: ['add', 'subtract', 'intersect'] },
     },
     ['item'],
+  ),
+  tool(
+    'set_mode',
+    "Sets how one operand of a group combines with the operands above it: add, subtract or intersect. The mode belongs to " +
+      "that group only (a shared operand can add in one group and subtract in another). Every operand's mode applies, the " +
+      "first one's too: a subtract or intersect operand with nothing added above it does nothing.",
+    {
+      node: { type: 'string', description: 'group node ref, e.g. "N3"' },
+      operand: { type: 'string', description: 'primitive or node ref in that group' },
+      mode: { type: 'string', enum: ['add', 'subtract', 'intersect'] },
+    },
+    ['node', 'operand', 'mode'],
   ),
   tool(
     'delete',
@@ -285,8 +306,8 @@ export const TOOLS: ToolDef[] = [
   ),
   tool(
     'wrap',
-    'Inserts a node directly above an existing one (parents now use the new node). offset: target is a union / subtract / ' +
-      'intersect node; k = surface shift in model units (positive grows, negative shrinks: wall thickening, clearances). ' +
+    'Inserts a node directly above an existing one (parents now use the new node). offset: target is a group ' +
+      'node; k = surface shift in model units (positive grows, negative shrinks: wall thickening, clearances). ' +
       'blend: target is a repeat node; k fillets the copies into each other. Returns the node ref (N#); change k with edit_operation.',
     {
       op: { type: 'string', enum: ['offset', 'blend'] },
@@ -298,7 +319,7 @@ export const TOOLS: ToolDef[] = [
   tool(
     'unwrap',
     "Removes operation nodes but keeps what's under them: the children take the node's place (the panel's Unwrap). " +
-      'Use it to drop a deform / offset / blend, or to ungroup a union.',
+      'Use it to drop a deform / offset / blend, or to ungroup a group.',
     { refs: refs('node refs (N#)') },
     ['refs'],
   ),
@@ -428,6 +449,8 @@ function summarize(name: string, args: Record<string, unknown>, result: Record<s
       return `${result.ref} = ${result.op}(${((result.operands as string[]) ?? []).join(', ')})`
     case 'move':
       return `${result.item} → ${((result.parents as string[]) ?? []).join(', ') || 'root'}`
+    case 'set_mode':
+      return `${result.ref}: ${args.operand} ${args.mode}`
     case 'delete':
       return ((result.deleted as string[]) ?? []).join(', ') || 'nothing'
     case 'create_function':

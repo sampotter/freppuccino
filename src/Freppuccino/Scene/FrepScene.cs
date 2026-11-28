@@ -284,7 +284,7 @@ public static class FrepScene
         var newOwners = new List<RhinoObject>();
         var newIds = new List<Guid>();
         var settings = new ObjectEnumeratorSettings { VisibleFilter = true, HiddenObjects = false };
-        foreach (var obj in doc.Objects.GetObjectList(settings))
+        foreach (var obj in doc.Objects.GetObjectList(settings).OrderBy(o => o.Id))
         {
             if (!TryRead(obj.Attributes, out var prim)) continue;
             // FFunction whose code doesn't compile: dropped (missing leaf); diagnostics come from compiling SDF.Code again (cached).
@@ -378,7 +378,12 @@ public static class FrepScene
             }
             else if (tree.Find(o.NodeId) is { } n)
             {
-                if (n.Op == FrepOp.Difference && n.Operands.Length > 0) b = Of(n.Operands[0]);
+                if (n.IsGroup)
+                    for (int i = 0; i < n.Operands.Length; i++)
+                    {
+                        if (n.ModeAt(i) != FrepMode.Add) continue;
+                        b.Union(Of(n.Operands[i]));
+                    }
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && refs.TryGetValue(n.Id, out var r)) b = FrepShaderGen.Warped(b, FrepWarpMath.Make(n, r.Axis, r.Region, b));
                 if (b.IsValid && n.HasMatrix) b.Transform(n.M);

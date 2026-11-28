@@ -1,11 +1,31 @@
-import { ChevronRight, Eye, EyeOff, Lock, Trash2, Ungroup } from 'lucide-react'
-import { useEffect, useState, type MouseEvent } from 'react'
+import { Check, ChevronRight, Eye, EyeOff, Lock, Trash2, Ungroup } from 'lucide-react'
+import { useEffect, useRef, useState, type DragEvent, type MouseEvent } from 'react'
 import { cn } from '@/lib/utils'
-import { NodeIcon } from '@/components/brand-icon'
+import { BrandIcon, NodeIcon } from '@/components/brand-icon'
+import { BlendHint } from '@/components/blend-hint'
 import { Input } from '@/components/ui/input'
-import { send } from '@/bridge/host'
-import { isDeform } from '@/lib/scene'
-import type { Id, OperationKind, SceneNode, SelectMode } from '@/bridge/protocol'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { send, useHost } from '@/bridge/host'
+import { BASE_TIP, IDLE_TIPS, MODES, ROOT_TIP, rowIdle, rowMode } from '@/lib/scene'
+import type { Id, RowMode, SceneNode, SelectMode } from '@/bridge/protocol'
+
+type ModeRow = { parent: Id; child: Id }
+type ModeMenu = { x: number; y: number; rows: ModeRow[]; current: RowMode; key: string }
+
+function modeRows(scene: SceneNode[], selection: Set<Id>, clicked: ModeRow): ModeRow[] {
+  if (!selection.has(clicked.child)) return [clicked]
+  const rows = new Map<string, ModeRow>()
+  const walk = (nodes: SceneNode[]) =>
+    nodes.forEach((n) => {
+      n.children?.forEach((c, i) => {
+        if (n.op === 'group' && (i > 0 || n.modes?.[i] !== 'add') && selection.has(c.id)) rows.set(`${n.id}/${c.id}`, { parent: n.id, child: c.id })
+      })
+      if (n.children) walk(n.children)
+    })
+  walk(scene)
+  rows.set(`${clicked.parent}/${clicked.child}`, clicked)
+  return [...rows.values()]
+}
 
 /**
  * Browser tree (Fusion 360 browser / CATIA spec tree). Primitives are leaves; operation nodes
@@ -28,28 +48,105 @@ export function SceneTree(props: {
       return next
     })
 
+  const [drag, setDrag] = useState<Drag | null>(null)
+  const [drop, setDrop] = useState<Drop | null>(null)
+  const endDrag = () => {
+    setDrag(null)
+    setDrop(null)
+  }
+  const dnd: Dnd = { drag, drop, setDrag, setDrop, endDrag }
+
   const [menu, setMenu] = useState<{ x: number; y: number; id: Id; operation: boolean } | null>(null)
+  const [modeMenu, setModeMenu] = useState<ModeMenu | null>(null)
   useEffect(() => {
-    if (!menu) return
-    const close = () => setMenu(null)
+    if (!menu && !modeMenu) return
+    const close = () => {
+      setMenu(null)
+      setModeMenu(null)
+    }
     window.addEventListener('pointerdown', close)
     window.addEventListener('keydown', close)
     return () => {
       window.removeEventListener('pointerdown', close)
       window.removeEventListener('keydown', close)
     }
-  }, [menu])
+  }, [menu, modeMenu])
+  const openModeMenu = (at: DOMRect, row: ModeRow, current: RowMode, key: string) => {
+    setMenu(null)
+    setModeMenu(modeMenu?.key === key ? null : { x: at.left, y: at.bottom + 4, rows: modeRows(props.nodes, props.selection, row), current, key })
+  }
 
   if (props.nodes.length === 0)
-    return <p className="type-small px-4 py-6 text-center text-muted-foreground">No F-rep objects yet. Create one below.</p>
+    return <p className="type-small px-4 py-6 text-center text-muted-foreground">No F-rep objects yet. Create one from the Freppuccino toolbar.</p>
 
   return (
     <>
       <ul role="tree" aria-multiselectable className="py-1">
-        {props.nodes.map((node) => (
-          <TreeRow key={node.id} node={node} depth={0} {...props} collapsed={collapsed} onToggle={toggle} onDeleteMenu={setMenu} />
+        {props.nodes.map((node, i) => (
+          <TreeRow
+            key={node.id}
+            node={node}
+            depth={0}
+            {...props}
+            path={node.id}
+            parent={null}
+            index={i}
+            dnd={dnd}
+            collapsed={collapsed}
+            onToggle={toggle}
+            onDeleteMenu={setMenu}
+            modeMenuKey={modeMenu?.key ?? null}
+            onModeMenu={openModeMenu}
+          />
         ))}
       </ul>
+      {modeMenu && (
+        <div
+          role="menu"
+          className="fixed z-50 w-40 rounded-md border border-input bg-popover p-1 text-popover-foreground shadow-float"
+          style={{ left: modeMenu.x, top: modeMenu.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {(Object.keys(MODES) as RowMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="menuitemradio"
+              aria-checked={mode === modeMenu.current}
+              className={cn('type-small flex h-7 w-full items-center gap-2 rounded-sm px-2 text-left hover:bg-accent', mode === modeMenu.current && 'bg-accent/60')}
+              onClick={() => {
+                send({ type: 'setModes', rows: modeMenu.rows.map((r) => ({ ...r, mode })) })
+                setModeMenu(null)
+              }}
+            >
+              <BrandIcon name={MODES[mode].icon} className="size-[17px]" />
+              <span className="flex-1">{MODES[mode].label}</span>
+              {mode === modeMenu.current && <Check className="size-3.5" />}
+            </button>
+          ))}
+        </div>
+      )}
+      {drag?.from && !drag.stuck && !drag.placement && (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'move'
+            if (drop?.zone !== 'root') setDrop({ path: '', zone: 'root' })
+          }}
+          onDragLeave={() => setDrop(null)}
+          onDrop={(e) => {
+            e.preventDefault()
+            send({ type: 'moveNode', id: drag.id, from: drag.from, to: null })
+            endDrag()
+          }}
+          className={cn(
+            'type-small sticky bottom-0 mx-2 mb-2 grid h-9 place-items-center rounded-sm border border-dashed bg-background text-muted-foreground',
+            drop?.zone === 'root' && 'border-primary bg-accent/50 text-foreground',
+          )}
+        >
+          Move to top level
+        </div>
+      )}
       {menu && (
         <div
           role="menu"
@@ -87,9 +184,32 @@ export function SceneTree(props: {
   )
 }
 
+type Drag = { id: Id; from: Id | null; placement?: string; index: number; inside: Set<Id>; stuck: boolean }
+type Drop = { path: string; zone: 'before' | 'after' | 'into' | 'root' }
+type Dnd = {
+  drag: Drag | null
+  drop: Drop | null
+  setDrag: (d: Drag | null) => void
+  setDrop: (d: Drop | null) => void
+  endDrag: () => void
+}
+
+const isCombine = (n: SceneNode | null) => !n || n.op === 'group'
+const placedLike = (drag: Drag, target: SceneNode | null) => (target?.placement ?? undefined) === drag.placement
+
+function subtreeIds(node: SceneNode, into = new Set<Id>()): Set<Id> {
+  into.add(node.id)
+  node.children?.forEach((c) => subtreeIds(c, into))
+  return into
+}
+
 function TreeRow(props: {
   node: SceneNode
   depth: number
+  path: string
+  parent: SceneNode | null
+  index: number
+  dnd: Dnd
   labels: Map<string, string>
   selection: Set<Id>
   collapsed: Set<Id>
@@ -97,10 +217,10 @@ function TreeRow(props: {
   onSelect: (ids: Id[], mode: SelectMode) => void
   onSetVisible: (id: Id, visible: boolean) => void
   onDeleteMenu: (menu: { x: number; y: number; id: Id; operation: boolean }) => void
-  /** subtract operands after the first are tools */
-  role?: 'tool'
+  modeMenuKey: string | null
+  onModeMenu: (at: DOMRect, row: ModeRow, current: RowMode, key: string) => void
 }) {
-  const { node, depth, selection, collapsed } = props
+  const { node, depth, selection, collapsed, parent, index, dnd } = props
   const hasChildren = !!node.children?.length
   const open = hasChildren && !collapsed.has(node.id)
   const selected = selection.has(node.id)
@@ -112,9 +232,83 @@ function TreeRow(props: {
     props.onSelect([node.id], mode)
   }
 
+  const zoneAt = (e: DragEvent<HTMLDivElement>, drag: Drag): Drop['zone'] | null => {
+    if (drag.stuck) return null
+    const r = e.currentTarget.getBoundingClientRect()
+    const y = (e.clientY - r.top) / r.height
+    const canInto = node.kind === 'operation' && isCombine(node) && !node.missing && !drag.inside.has(node.id) &&
+      drag.from !== node.id && placedLike(drag, node)
+    const canBeside = isCombine(parent) && !(parent && drag.inside.has(parent.id)) && node.id !== drag.id && placedLike(drag, parent)
+    if (canInto && (!canBeside || (y > 0.25 && y < 0.75))) return 'into'
+    if (!canBeside) return null
+    return y < 0.5 ? 'before' : 'after'
+  }
+
+  const onDrop = (zone: Drop['zone'], drag: Drag) => {
+    if (zone === 'into') {
+      if (drag.from !== node.id) send({ type: 'moveNode', id: drag.id, from: drag.from, to: node.id })
+      return
+    }
+    const to = parent?.id ?? null
+    if (to === null) {
+      if (drag.from !== null) send({ type: 'moveNode', id: drag.id, from: drag.from, to: null })
+      return
+    }
+    let at = zone === 'before' ? index : index + 1
+    if (drag.from === to && drag.index < at) at--
+    if (drag.from === to && drag.index === at) return
+    send({ type: 'moveNode', id: drag.id, from: drag.from, to, index: at })
+  }
+
+  const dropZone = dnd.drop?.path === props.path ? dnd.drop.zone : null
+
+  const expandTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelExpand = () => {
+    if (expandTimer.current) clearTimeout(expandTimer.current)
+    expandTimer.current = null
+  }
+  useEffect(() => {
+    if (dropZone !== 'into' || !hasChildren || !collapsed.has(node.id)) return cancelExpand()
+    if (!expandTimer.current) expandTimer.current = setTimeout(() => {
+      expandTimer.current = null
+      props.onToggle(node.id)
+    }, 600)
+  })
+  useEffect(() => cancelExpand, [])
+
   return (
     <li role="treeitem" aria-selected={selected} aria-expanded={hasChildren ? open : undefined}>
       <div
+        draggable={!node.missing}
+        onDragStart={(e) => {
+          if ((e.target as HTMLElement).closest('input')) return e.preventDefault()
+          e.stopPropagation()
+          e.dataTransfer.effectAllowed = 'move'
+          e.dataTransfer.setData('text/plain', node.id)
+          dnd.setDrag({ id: node.id, from: parent?.id ?? null, placement: parent?.placement, index, inside: subtreeIds(node), stuck: !isCombine(parent) || parent?.placement === 'mixed' })
+        }}
+        onDragEnd={dnd.endDrag}
+        onDragOver={(e) => {
+          const zone = dnd.drag && zoneAt(e, dnd.drag)
+          if (!zone) {
+            if (dropZone) dnd.setDrop(null)
+            return
+          }
+          e.preventDefault()
+          e.stopPropagation()
+          e.dataTransfer.dropEffect = 'move'
+          if (dropZone !== zone) dnd.setDrop({ path: props.path, zone })
+        }}
+        onDragLeave={(e) => {
+          if (dropZone && !e.currentTarget.contains(e.relatedTarget as Node | null)) dnd.setDrop(null)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          const zone = dnd.drag && zoneAt(e, dnd.drag)
+          if (dnd.drag && zone) onDrop(zone, dnd.drag)
+          dnd.endDrag()
+        }}
         onClick={onClick}
         onContextMenu={(e) => {
           if (!canDelete || (e.target as HTMLElement).closest('input')) return
@@ -123,13 +317,22 @@ function TreeRow(props: {
           props.onDeleteMenu({ x: e.clientX, y: e.clientY, id: node.id, operation: node.kind === 'operation' })
         }}
         className={cn(
-          'group mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-sm pr-1 select-none hover:bg-accent/50',
+          'group relative mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-sm pr-1 select-none hover:bg-accent/50',
           selected && 'bg-accent font-bold hover:bg-accent',
-          !node.visible && 'text-muted-foreground [&_[data-slot=brand-icon]]:opacity-40',
+          (!node.visible || (parent?.op === 'group' && rowIdle(parent, index))) && 'text-muted-foreground [&_[data-slot=brand-icon]]:opacity-40',
           node.missing && 'italic line-through',
+          dnd.drag?.id === node.id && 'opacity-50',
+          dropZone === 'into' && 'bg-accent/50 ring-2 ring-primary ring-inset',
         )}
         style={{ paddingLeft: 4 + depth * 16 }}
       >
+        {(dropZone === 'before' || dropZone === 'after') && (
+          <span
+            aria-hidden
+            className={cn('pointer-events-none absolute right-0 h-0.5 rounded-full bg-primary', dropZone === 'before' ? '-top-px' : '-bottom-px')}
+            style={{ left: 4 + depth * 16 }}
+          />
+        )}
         <button
           type="button"
           aria-label={open ? 'Collapse' : 'Expand'}
@@ -139,13 +342,13 @@ function TreeRow(props: {
         >
           <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
         </button>
+        <ModeCell {...props} />
         <NodeIcon node={node} className="size-5" />
         <span className={cn('min-w-0 flex-1 truncate', node.kind === 'operation' && 'font-extrabold')}>
-          {props.role === 'tool' && <span className="text-muted-foreground">− </span>}
           {props.labels.get(node.id)}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
-          {node.kind === 'operation' && node.op && !isDeform(node.op) && node.op !== 'offset' && !node.missing && (
+          {(node.op === 'group' || node.op === 'blend') && !node.missing && (
             <BlendField id={node.id} op={node.op} k={node.k ?? 0} />
           )}
           {node.locked && <Lock className="size-3.5 text-muted-foreground" />}
@@ -170,7 +373,9 @@ function TreeRow(props: {
               {...props}
               node={child}
               depth={depth + 1}
-              role={node.op === 'subtract' && i > 0 ? 'tool' : undefined}
+              path={`${props.path}/${i}:${child.id}`}
+              parent={node}
+              index={i}
             />
           ))}
         </ul>
@@ -179,9 +384,69 @@ function TreeRow(props: {
   )
 }
 
+function ModeCell(props: {
+  node: SceneNode
+  parent: SceneNode | null
+  index: number
+  path: string
+  modeMenuKey: string | null
+  onModeMenu: (at: DOMRect, row: ModeRow, current: RowMode, key: string) => void
+}) {
+  const { node, parent, index } = props
+  if (!parent)
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span aria-label="Top level" className="grid size-[22px] shrink-0 place-items-center">
+            <span className="size-1.5 rounded-full border-[1.5px] border-muted-foreground opacity-60" />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-56">{ROOT_TIP}</TooltipContent>
+      </Tooltip>
+    )
+  if (parent.op !== 'group') return <span aria-hidden className="w-[22px] shrink-0" />
+  const mode = rowMode(parent, index)
+  if (index === 0 && mode === 'add')
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span aria-label="Base" className="grid size-[22px] shrink-0 place-items-center">
+            <span className="size-1.5 rounded-full bg-muted-foreground opacity-60" />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-56">{BASE_TIP}</TooltipContent>
+      </Tooltip>
+    )
+  const idle = rowIdle(parent, index)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={MODES[mode].label}
+          aria-haspopup="menu"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            props.onModeMenu(e.currentTarget.getBoundingClientRect(), { parent: parent.id, child: node.id }, mode, props.path)
+          }}
+          className={cn(
+            'grid size-[22px] shrink-0 place-items-center rounded-sm border border-input bg-card outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
+            props.modeMenuKey === props.path && 'border-ink',
+          )}
+        >
+          <BrandIcon name={MODES[mode].icon} className="size-[17px]" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{(idle && IDLE_TIPS[mode]) || MODES[mode].tip}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 /** Typed blend for an operation node. Commits on Enter or blur, same path as the inspector slider. */
-function BlendField(props: { id: Id; op: OperationKind | 'blend'; k: number }) {
+function BlendField(props: { id: Id; op: 'group' | 'blend'; k: number }) {
   const { id, op, k } = props
+  const units = useHost((s) => s.settings.units)
   const [text, setText] = useState(() => formatBlend(k))
   const [shown, setShown] = useState(k)
   if (k !== shown) {
@@ -201,19 +466,21 @@ function BlendField(props: { id: Id; op: OperationKind | 'blend'; k: number }) {
   }
 
   return (
-    <Input
-      inputMode="decimal"
-      aria-label="Blend"
-      value={text}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') e.currentTarget.blur()
-      }}
-      className="type-numeric h-5 w-14 px-1 text-right font-medium"
-    />
+    <BlendHint op={op} units={units}>
+      <Input
+        inputMode="decimal"
+        aria-label="Blend radius"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+        }}
+        className="type-numeric h-5 w-14 px-1 text-right font-medium"
+      />
+    </BlendHint>
   )
 }
 

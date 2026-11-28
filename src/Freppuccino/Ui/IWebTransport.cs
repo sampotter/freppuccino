@@ -16,6 +16,8 @@ interface IWebTransport : IDisposable
 
     /// (message JSON, URL of the sending document or null if unknown). Raised on the UI thread.
     event Action<string, string?>? Received;
+
+    event Action? Lost;
 }
 
 /// Navigation policy from <see cref="WebViewHost"/>: return false to cancel (the host then opens the link externally).

@@ -295,34 +295,38 @@ public static class FrepShaderGen
             }
 
             var terms = n.Operands.Select(o => Eval(o, c)).ToList();
-            List<string>? live = n.Op switch
-            {
-                FrepOp.Union => [.. terms.OfType<string>()],
-                FrepOp.Intersect => terms.Contains(null) ? null : [.. terms.OfType<string>()],
-                _ => terms.Count == 0 || terms[0] == null ? null : [.. terms.OfType<string>()],
-            };
-            if (live is not { Count: > 0 }) return null;
             int slot = kSlot[id];
             var k = $"u.data[{kBase + slot / 4}].{"xyzw"[slot % 4]}";
-            map.Append($"    float {v} = {live[0]};\n");
-            color.Append($"    vec4 {v} = {live[0]};\n");
-            foreach (var t in live.Skip(1))
+            bool started = false, added = false;
+            for (int i = 0; i < terms.Count; i++)
             {
-                map.Append(n.Op switch
+                if (terms[i] is not { } t) continue;
+                var mode = n.ModeAt(i);
+                if (!started)
                 {
-                    FrepOp.Union => $"    {v} = smin({v}, {t}, {k});\n",
-                    FrepOp.Intersect => $"    {v} = smax({v}, {t}, {k});\n",
+                    if (mode != FrepMode.Add) continue;
+                    map.Append($"    float {v} = {t};\n");
+                    color.Append($"    vec4 {v} = {t};\n");
+                    started = true;
+                    continue;
+                }
+                added |= mode == FrepMode.Add;
+                map.Append(mode switch
+                {
+                    FrepMode.Add => $"    {v} = smin({v}, {t}, {k});\n",
+                    FrepMode.Intersect => $"    {v} = smax({v}, {t}, {k});\n",
                     _ => $"    {v} = smax({v}, -{t}, {k});\n",
                 });
-                color.Append(n.Op switch
+                color.Append(mode switch
                 {
-                    FrepOp.Union => $"    {v} = cmin({v}, {t}, {k});\n",
-                    FrepOp.Intersect => $"    {v} = cmax({v}, {t}, {k});\n",
+                    FrepMode.Add => $"    {v} = cmin({v}, {t}, {k});\n",
+                    FrepMode.Intersect => $"    {v} = cmax({v}, {t}, {k});\n",
                     _ => $"    {v} = csub({v}, {t}, {k});\n",
                 });
             }
+            if (!started) return null;
             // FZebra: the hit point lies on this union's surface (incl. its blend fillets).
-            if (n.Op == FrepOp.Union) color.Append($"    zeb = max(zeb, 1.0 - step(tol, abs({v}.w)));\n");
+            if (added) color.Append($"    zeb = max(zeb, 1.0 - step(tol, abs({v}.w)));\n");
             return v;
         }
 
@@ -436,6 +440,7 @@ public static class FrepShaderGen
             cache[key] = src = new ShaderSource(Vertex, Fragment(dataRows, userFns, helpers.ToString(), map.ToString(), color.ToString()))
             {
                 Layout = Layout(prims, warps.Select(id => tree.Find(id)!.Op), ks.Count, mRow.Count, roots.Count),
+                Background = true,
             };
         }
         return (src, ks, warps, rootOps);
@@ -444,10 +449,16 @@ public static class FrepShaderGen
     /// The shared GLSL library (also callable from user code).
     static string Library => UserFnLibrary.Glsl;
 
+    static string GBuffer => OperatingSystem.IsWindows()
+        ? "layout(location = 1) out vec4 outPos;\nlayout(location = 2) out vec4 outNrm;\n#define GB(pos, nrm) outPos = pos; outNrm = nrm;"
+        : "#define GB(pos, nrm)";
+
     static string Fragment(int dataRows, string userFns, string helpers, string map, string color) => $$"""
         #version 450
+        #extension GL_EXT_control_flow_attributes : require
         layout(location = 0) in vec2 vNdc;
         layout(location = 0) out vec4 outColor;
+        {{GBuffer}}
         layout(std140, set = 0, binding = 0) uniform Frame
         {
             vec4 camPos;     // xyz eye; w = 1 perspective, 0 parallel
@@ -654,28 +665,37 @@ public static class FrepShaderGen
             // Fields that underestimate distance (ellipsoids, placements, node transforms) would widen it, so the width
             // is measured as value / |gradient| (first-order distance to the surface) at the closest approach.
             bool onSelected = hit && s < 2.0 * eps; // the hit surface is a selected root's (it is the field's min there)
-            if (!onSelected && nearSel < 4.0 * u.selColor.w)
+            bool needSel = !onSelected && nearSel < 4.0 * u.selColor.w;
+            if (!needSel && !hit) discard;
+            float en = u.params.z + u.params.y * tNear;
+            vec3 pn = ro + rd * tNear;
+            vec3 p = ro + rd * t;
+            vec3 g = vec3(0.0), n = vec3(0.0);
+            [[dont_unroll]] for (int j = needSel ? 0 : 4; j < (hit ? 8 : 4); j++)
             {
-                float en = u.params.z + u.params.y * tNear;
-                vec3 pn = ro + rd * tNear;
-                const vec2 kk = vec2(1.0, -1.0);
-                vec3 g = (kk.xyy * selDist(pn + kk.xyy * en) + kk.yyx * selDist(pn + kk.yyx * en) +
-                          kk.yxy * selDist(pn + kk.yxy * en) + kk.xxx * selDist(pn + kk.xxx * en)) / (4.0 * en);
+                int m = j & 3;
+                vec3 o = vec3(((m + 3) >> 1) & 1, (m >> 1) & 1, m & 1) * 2.0 - 1.0;
+                bool sel = j < 4;
+                float sv;
+                float dv = mapSel(sel ? pn + o * en : p + o * eps, sv);
+                if (sel) g += o * sv; else n += o * dv;
+            }
+            if (needSel)
+            {
+                g /= 4.0 * en;
                 float dist = nearSel * 2.0 * en / max(length(g), 1e-6);
-                if (dist / (2.0 * en) < u.selColor.w) { outColor = vec4(u.selColor.rgb, 1.0); return; }
+                if (dist / (2.0 * en) < u.selColor.w) { outColor = vec4(u.selColor.rgb, 1.0); GB(vec4(0.0, 0.0, 0.0, -2.0), vec4(0.0)); return; }
             }
             if (!hit) discard;
-            vec3 p = ro + rd * t;
-            const vec2 k = vec2(1.0, -1.0);
-            vec3 n = normalize(k.xyy * map(p + k.xyy * eps) + k.yyx * map(p + k.yyx * eps) +
-                               k.yxy * map(p + k.yxy * eps) + k.xxx * map(p + k.xxx * eps));
+            n = normalize(n);
             // Object display color, lit as before: world +Z up = full color, -Z down = GREY x color.
             // The hit sits up to ~(1 + 2 x inset) eps inside the true surface; tol covers that with margin.
             float zeb;
             vec3 col = sceneColor(p, eps * (4.0 + 2.0 * u.params.x), zeb);
             // Zebra stripes are unlit (like Rhino's), so their edges read cleanly.
-            if (u.zebraCfg.x > 0.0 && zeb > 0.5) { outColor = vec4(zebra(rd, n), 1.0); return; }
+            if (u.zebraCfg.x > 0.0 && zeb > 0.5) { outColor = vec4(zebra(rd, n), 1.0); GB(vec4(p, -1.0), vec4(n, 0.0)); return; }
             outColor = vec4(col * mix(GREY, vec3(1.0), n.z * 0.5 + 0.5), 1.0);
+            GB(vec4(p, 1.0), vec4(n, 0.0));
         }
         """;
 
@@ -828,7 +848,11 @@ public static class FrepShaderGen
             }
             else if (tree.Find(o.NodeId) is { Hidden: false } n)
             {
-                if (n.Op == FrepOp.Difference) { if (n.Operands.Length > 0) b = Of(n.Operands[0]); }
+                if (n.IsGroup)
+                {
+                    for (int i = 0; i < n.Operands.Length; i++)
+                        if (n.ModeAt(i) != FrepMode.Subtract) b.Union(Of(n.Operands[i]));
+                }
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && warp.TryGetValue(n.Id, out var w)) b = Warped(b, w);
                 if (b.IsValid && n.HasMatrix) b.Transform(n.M); // node transform: box of the mapped corners

@@ -1,5 +1,5 @@
 import type { BrandIconName } from '@/components/brand-icon'
-import type { AllowedCommand, DeformKind, OperationKind, SceneNode } from '@/bridge/protocol'
+import type { AllowedCommand, DeformKind, OperationKind, RowMode, SceneNode } from '@/bridge/protocol'
 
 interface PrimitiveInfo {
   label: string
@@ -28,8 +28,30 @@ export const PRIMITIVES: Record<string, PrimitiveInfo> = {
 
 export const OPERATIONS: Record<OperationKind, { label: string; icon: BrandIconName }> = {
   union: { label: 'Union', icon: 'union' },
-  subtract: { label: 'Subtract', icon: 'subtract' },
-  intersect: { label: 'Intersect', icon: 'intersect' },
+  subtract: { label: 'Difference', icon: 'subtract' },
+  intersect: { label: 'Intersection', icon: 'intersect' },
+}
+
+export const MODES: Record<RowMode, { label: string; icon: BrandIconName; tip: string }> = {
+  add: { label: 'Add', icon: 'union', tip: 'Add to the rows above' },
+  subtract: { label: 'Subtract', icon: 'subtract', tip: 'Subtract from the rows above' },
+  intersect: { label: 'Intersect', icon: 'intersect', tip: 'Intersect with the rows above' },
+}
+
+export const BASE_TIP = 'Base. The group starts from this row. Drag another row above it to change the base.'
+export const ROOT_TIP = 'Top level. Everything here is added together.'
+export const IDLE_TIPS: Partial<Record<RowMode, string>> = {
+  subtract: 'Nothing above this row to subtract from.',
+  intersect: 'Nothing above this row to intersect with.',
+}
+
+export function rowMode(parent: SceneNode, index: number): RowMode {
+  return parent.modes?.[index] ?? 'add'
+}
+
+export function rowIdle(parent: SceneNode, index: number): boolean {
+  if (rowMode(parent, index) === 'add') return false
+  return !(parent.children ?? []).slice(0, index).some((c, i) => rowMode(parent, i) === 'add' && c.visible && !c.missing)
 }
 
 /** Commands take the selected object / node, then ask for the line / box. Angles in degrees. */
@@ -46,14 +68,16 @@ export function isDeform(op: SceneNode['op']): op is DeformKind {
 export function nodeIconName(node: SceneNode): BrandIconName | undefined {
   if (node.op === 'blend') return 'blend'
   if (node.op === 'offset') return 'offset'
-  if (node.kind === 'operation') return !node.op ? undefined : isDeform(node.op) ? DEFORMS[node.op].icon : OPERATIONS[node.op].icon
+  if (node.op === 'group') return 'group'
+  if (node.kind === 'operation') return !node.op ? undefined : isDeform(node.op) ? DEFORMS[node.op].icon : undefined
   return node.sdfType ? PRIMITIVES[node.sdfType]?.icon : undefined
 }
 
 export function typeLabel(node: SceneNode): string {
   if (node.op === 'blend') return 'Blend'
   if (node.op === 'offset') return 'Offset'
-  if (node.kind === 'operation') return !node.op ? 'Operation' : isDeform(node.op) ? DEFORMS[node.op].label : OPERATIONS[node.op].label
+  if (node.op === 'group') return 'Group'
+  if (node.kind === 'operation') return !node.op ? 'Operation' : isDeform(node.op) ? DEFORMS[node.op].label : 'Operation'
   return (node.sdfType && PRIMITIVES[node.sdfType]?.label) || node.sdfType || 'Primitive'
 }
 
@@ -72,7 +96,7 @@ function nameStem(node: SceneNode): string {
   return node.kind === 'primitive' && node.custom ? `Custom ${type}-based FRep` : type
 }
 
-/** Display labels for every node: the Rhino name if set, else "Sphere 1", "Union 2", ... in tree order.
+/** Display labels for every node: the Rhino name if set, else "Sphere 1", "Group 2", ... in tree order.
  *  A custom primitive is always "Custom Box-based FRep 1", numbered among that stem. */
 export function labelNodes(scene: SceneNode[]): Map<string, string> {
   const labels = new Map<string, string>()

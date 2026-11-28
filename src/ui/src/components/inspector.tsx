@@ -1,15 +1,16 @@
-import { ArrowUpDown, Trash2, Ungroup } from 'lucide-react'
+import { Trash2, Ungroup } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { BrandIcon, NodeIcon, type BrandIconName } from '@/components/brand-icon'
+import { BrandIcon, NodeIcon } from '@/components/brand-icon'
+import { BlendHint } from '@/components/blend-hint'
 import { ParamSlider } from '@/components/param-slider'
 import { ColorField } from '@/components/color-field'
 import { CodeView } from '@/components/code-view'
 import { send, useHost } from '@/bridge/host'
-import type { AllowedCommand, DeformKind, Id, OperationKind, SceneNode } from '@/bridge/protocol'
-import { DEFORMS, OPERATIONS, PRIMITIVES, displayParams, isDeform, typeLabel } from '@/lib/scene'
+import type { Id, OperationKind, SceneNode } from '@/bridge/protocol'
+import { OPERATIONS, displayParams, isDeform, typeLabel } from '@/lib/scene'
 
 /** Bottom half of the panel; what it shows depends on the selection (pick order). */
 export function Inspector(props: {
@@ -19,8 +20,9 @@ export function Inspector(props: {
   onEditCode?: (id: Id) => void
 }) {
   const { labels, roots } = props
+  const doc = useHost((s) => s.doc)
   const selected = props.selected.filter((n) => !n.missing)
-  if (selected.length === 0) return <CreateSection />
+  if (selected.length === 0) return null
   const one = selected[0]
   if (selected.length === 1)
     return (
@@ -34,12 +36,8 @@ export function Inspector(props: {
         ) : isDeform(one.op) ? (
           <DeformSection key={one.id} node={one} labels={labels} />
         ) : (
-          <CombineSection key={one.id} operands={one.children ?? []} labels={labels} existing={one} />
+          <CombineSection key={`${doc}/${one.id}`} operands={one.children ?? []} labels={labels} existing={one} />
         )}
-        <DeformButtons
-          repeatId={one.op === 'repeat' ? one.id : undefined}
-          offsetId={one.op === 'union' || one.op === 'subtract' || one.op === 'intersect' ? one.id : undefined}
-        />
       </>
     )
   const canCombine = selected.length >= 2 && selected.every((n) => roots.has(n.id))
@@ -47,7 +45,7 @@ export function Inspector(props: {
   return (
     <Section title="Combine">
       <p className="type-small text-muted-foreground">
-        Select two or more top-level nodes. Subtract takes exactly two.
+        Select two or more top-level nodes.
       </p>
     </Section>
   )
@@ -63,20 +61,6 @@ function Section(props: { title: string; badge?: string; children: React.ReactNo
       </header>
       {props.children}
     </section>
-  )
-}
-
-// ── Nothing selected: create ──
-
-function CreateSection() {
-  return (
-    <Section title="Create">
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-2">
-        {Object.values(PRIMITIVES).map((p) => (
-          <CommandTile key={p.command} label={p.label} icon={p.icon} command={p.command} />
-        ))}
-      </div>
-    </Section>
   )
 }
 
@@ -250,31 +234,28 @@ function NodeActions(props: { id: Id }) {
 function CombineSection(props: { operands: SceneNode[]; labels: Map<string, string>; existing?: SceneNode }) {
   const { labels, existing } = props
   const units = useHost((s) => s.settings.units)
-  const [swapped, setSwapped] = useState(false)
-  const existingOp = existing?.op === 'union' || existing?.op === 'subtract' || existing?.op === 'intersect' ? existing.op : undefined
-  const [op, setOp] = useState<OperationKind>(existingOp ?? 'union')
+  const [op, setOp] = useState<OperationKind>('union')
   const [k, setK] = useState(existing?.k ?? 5)
 
   // Host values win when they change (undo, another edit); unrelated scene updates keep local edits.
   // Not mid-drag, and not until the host has caught up with our last edit (stale echoes would yank the slider back).
   const [dragging, setDragging] = useState(false)
-  const [pending, setPending] = useState<{ op: OperationKind; k: number } | null>(null)
-  const [synced, setSynced] = useState({ op: existing?.op, k: existing?.k })
-  const caughtUp = !pending || (existing?.op === pending.op && existing?.k === pending.k)
-  if (existing && !dragging && caughtUp && (pending || existing.op !== synced.op || existing.k !== synced.k)) {
+  const [pending, setPending] = useState<{ k: number } | null>(null)
+  const [synced, setSynced] = useState({ k: existing?.k })
+  const caughtUp = !pending || existing?.k === pending.k
+  if (existing && !dragging && caughtUp && (pending || existing.k !== synced.k)) {
     setPending(null)
-    setSynced({ op: existing.op, k: existing.k })
-    if (existingOp) setOp(existingOp)
+    setSynced({ k: existing.k })
     if (existing.k !== undefined) setK(existing.k)
   }
 
-  // Live edits of an existing node. Blend previews are throttled; release sends the final value (= one undo step).
-  const live = useRef({ timer: 0, k: 0, sent: null as { op: OperationKind; k: number } | null, previewed: false })
-  const edit = (next: { op: OperationKind; k: number }, preview: boolean) => {
+  // Live edits of an existing group's blend. Previews are throttled; release sends the final value (= one undo step).
+  const live = useRef({ timer: 0, k: 0, sent: null as { op: 'group'; k: number } | null, previewed: false })
+  const edit = (next: { k: number }, preview: boolean) => {
     if (!existing) return
-    live.current.sent = next
+    live.current.sent = { op: 'group', ...next }
     setPending(next)
-    send({ type: 'setOperation', id: existing.id, ...next, preview })
+    send({ type: 'setOperation', id: existing.id, op: 'group', ...next, preview })
   }
   const previewK = (v: number) => {
     const l = live.current
@@ -284,7 +265,7 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
       l.timer = 0
       if (l.k === (l.previewed ? l.sent?.k : existing?.k)) return
       l.previewed = true
-      edit({ op, k: l.k }, true)
+      edit({ k: l.k }, true)
     }, PREVIEW_MS)
   }
   const commitK = (v: number) => {
@@ -294,7 +275,7 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
     setK(v)
     setDragging(false)
     // Final message closes the host's gesture, so send it even if the drag ended where it started.
-    if (l.previewed || v !== existing?.k) edit({ op, k: v }, false)
+    if (l.previewed || v !== existing?.k) edit({ k: v }, false)
     l.previewed = false
   }
   // Unmounted mid-drag (selection changed): close the gesture.
@@ -307,53 +288,37 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
     }
   }, [id])
 
-  // Swapping only makes sense for two new operands; otherwise pick order decides the subtract target.
-  const canSwap = !existing && props.operands.length === 2
-  const operands = canSwap && swapped ? [...props.operands].reverse() : props.operands
-  const subtractOk = operands.length === 2
-  const ordered = op === 'subtract'
-  const role = (i: number) => (ordered ? (i === 0 ? 'Target' : 'Tool') : `#${i + 1}`)
+  const operands = props.operands
+  const preset = existing ? presetOf(existing) : op
+  const doc = useHost((s) => s.doc)
+  const maxKey = existing ? `${doc}/${existing.id}` : ''
+  const [max, setMaxState] = useState(() => (existing && blendMax.get(maxKey)) || 20)
+  const setMax = (v: number) => {
+    setMaxState(v)
+    if (existing) blendMax.set(maxKey, v)
+  }
 
   return (
     <Section
-      title={existing ? (labels.get(existing.id) ?? 'Operation') : 'Combine'}
-      badge={existing ? 'Operation' : `${operands.length} operands`}
-      icon={<BrandIcon name={OPERATIONS[op].icon} className="size-6" />}
+      title={existing ? (labels.get(existing.id) ?? 'Group') : 'Combine'}
+      badge={existing ? 'Group' : `${operands.length} operands`}
+      icon={existing ? <NodeIcon node={existing} className="size-6" /> : <BrandIcon name={OPERATIONS[op].icon} className="size-6" />}
     >
-      <div className="flex items-center gap-1">
-        <div className="grid min-w-0 flex-1 gap-1">
-          {operands.map((o, i) => (
-            <Operand key={`${i}:${o.id}`} node={o} label={labels.get(o.id)} role={role(i)} />
-          ))}
-        </div>
-        {canSwap && (
-          <Button variant="ghost" size="icon-xs" aria-label="Swap" onClick={() => setSwapped((s) => !s)}>
-            <ArrowUpDown />
-          </Button>
-        )}
-      </div>
 
       <ToggleGroup
         type="single"
         variant="outline"
         spacing={0}
-        value={op}
+        value={preset ?? ''}
         onValueChange={(v) => {
-          if (!v || v === op || (v === 'subtract' && !subtractOk)) return
-          setOp(v as OperationKind)
-          edit({ op: v as OperationKind, k }, false)
+          if (!v) return
+          if (!existing) return setOp(v as OperationKind)
+          if (v !== preset) send({ type: 'setOperation', id: existing.id, op: v as OperationKind, k })
         }}
         className="w-full"
       >
         {(Object.keys(OPERATIONS) as OperationKind[]).map((kind) => (
-          <ToggleGroupItem
-            key={kind}
-            value={kind}
-            disabled={kind === 'subtract' && !subtractOk}
-            title={kind === 'subtract' && !subtractOk ? 'Subtract takes exactly two nodes' : undefined}
-            className="flex-1 px-1"
-            aria-label={OPERATIONS[kind].label}
-          >
+          <ToggleGroupItem key={kind} value={kind} className="flex-1 px-1" aria-label={OPERATIONS[kind].label}>
             <BrandIcon name={OPERATIONS[kind].icon} /> {OPERATIONS[kind].label}
           </ToggleGroupItem>
         ))}
@@ -361,16 +326,21 @@ function CombineSection(props: { operands: SceneNode[]; labels: Map<string, stri
 
       <ParamSlider
         label="Blend radius"
+        wrapInput={(input) => <BlendHint op="group" units={units}>{input}</BlendHint>}
         units={k === 0 ? 'sharp' : units}
         value={k}
-        max={20}
+        max={max}
+        onMaxChange={setMax}
         onChange={(v) => {
           setK(v)
           if (!existing) return
           setDragging(true)
           previewK(v)
         }}
-        onCommit={existing ? commitK : setK}
+        onCommit={(v) => {
+          if (v > max) setMax(v)
+          return existing ? commitK(v) : setK(v)
+        }}
       />
 
       {existing ? (
@@ -419,10 +389,8 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string> }) 
     }
   }, [node.id])
 
-  const child = node.children?.[0]
   return (
     <Section title={labels.get(node.id) ?? ''} badge={typeLabel(node)} icon={<NodeIcon node={node} className="size-6" />}>
-      {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
       {node.refMissing && (
         <p className="type-small text-muted-foreground">{node.op === 'repeat' ? 'Box' : 'Axis line'} deleted; drawn unwarped.</p>
       )}
@@ -439,6 +407,11 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string> }) 
           onCommit={(v) => commit(p.key, v)}
         />
       ))}
+      {node.op === 'repeat' && (
+        <Button variant="outline" onClick={() => send({ type: 'blendRepeat', id: node.id })}>
+          <BrandIcon name="blend" /> Blend the copies
+        </Button>
+      )}
       <NodeActions id={node.id} />
     </Section>
   )
@@ -447,10 +420,8 @@ function DeformSection(props: { node: SceneNode; labels: Map<string, string> }) 
 /** Blend node above a Repeat. The slider is the same one a union uses; it fillets every copy. */
 function BlendSection(props: { node: SceneNode; labels: Map<string, string> }) {
   const { node, labels } = props
-  const child = node.children?.[0]
   return (
     <Section title={labels.get(node.id) ?? ''} badge="Blend" icon={<BrandIcon name="blend" className="size-6" />}>
-      {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
       <BlendSlider id={node.id} k={node.k ?? 0} />
       <NodeActions id={node.id} />
     </Section>
@@ -499,6 +470,7 @@ function BlendSlider(props: { id: Id; k: number }) {
   return (
     <ParamSlider
       label="Blend radius"
+      wrapInput={(input) => <BlendHint op="blend" units={units}>{input}</BlendHint>}
       units={k === 0 ? 'sharp' : units}
       value={k}
       max={20}
@@ -518,10 +490,8 @@ function BlendSlider(props: { id: Id; k: number }) {
 /** Offset node above a union, intersection, or difference. Positive distance grows the solid. */
 function OffsetSection(props: { node: SceneNode; labels: Map<string, string> }) {
   const { node, labels } = props
-  const child = node.children?.[0]
   return (
     <Section title={labels.get(node.id) ?? ''} badge="Offset" icon={<BrandIcon name="offset" className="size-6" />}>
-      {child && <Operand node={child} label={labels.get(child.id)} role="Child" />}
       <OffsetSlider id={node.id} k={node.k ?? 0} />
       <NodeActions id={node.id} />
     </Section>
@@ -590,38 +560,19 @@ function OffsetSlider(props: { id: Id; k: number }) {
 
 /** Runs FTwist / FBend / FRepeat on the selection (they then ask for the line / box).
  *  A Repeat also gets Blend. A union, intersection, or difference also gets Offset. */
-function DeformButtons(props: { repeatId?: Id; offsetId?: Id }) {
-  return (
-    <Section title="Deform">
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-2">
-        {(Object.keys(DEFORMS) as DeformKind[]).map((kind) => (
-          <CommandTile key={kind} {...DEFORMS[kind]} />
-        ))}
-        {props.repeatId && (
-          <CommandTile label="Blend" icon="blend" onClick={() => send({ type: 'blendRepeat', id: props.repeatId! })} />
-        )}
-        {props.offsetId && (
-          <CommandTile label="Offset" icon="offset" onClick={() => send({ type: 'offsetNode', id: props.offsetId! })} />
-        )}
-      </div>
-    </Section>
-  )
+const blendMax = new Map<string, number>()
+
+function presetOf(group: SceneNode): OperationKind | undefined {
+  const modes = (group.children ?? []).map((_, i) => group.modes?.[i] ?? 'add')
+  if (modes[0] !== 'add') return undefined
+  const rest = modes.slice(1)
+  if (rest.every((m) => m === 'add')) return 'union'
+  if (rest.every((m) => m === 'subtract')) return 'subtract'
+  if (rest.every((m) => m === 'intersect')) return 'intersect'
+  return undefined
 }
 
 /** Icon + label button that runs a Rhino command (Create / Deform grids). */
-function CommandTile(props: { label: string; icon: BrandIconName; command?: AllowedCommand; onClick?: () => void }) {
-  return (
-    <button
-      type="button"
-      title={props.command ?? props.label}
-      onClick={props.onClick ?? (() => props.command && send({ type: 'runCommand', command: props.command }))}
-      className="group flex flex-col items-center gap-1 rounded-md border border-input bg-card px-1 pt-2 pb-1.5 transition-[background-color,translate,box-shadow] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:translate-y-px"
-    >
-      <BrandIcon name={props.icon} className="size-7 transition-transform group-hover:-translate-y-0.5" />
-      <span className="type-small">{props.label}</span>
-    </button>
-  )
-}
 
 function SubHeading(props: { children: React.ReactNode }) {
   return <h3 className="type-label -mb-1 text-muted-foreground">{props.children}</h3>
@@ -641,14 +592,3 @@ function userParamRange(d: number): { min: number; max: number; step: number } {
 /** Live blend previews: at most one per this many ms (~30 Hz); the final value always follows on release. */
 const PREVIEW_MS = 33
 
-function Operand(props: { node: SceneNode; label?: string; role: string }) {
-  return (
-    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-input bg-card px-2 py-1.5">
-      <NodeIcon node={props.node} className="size-5" />
-      <div className="grid min-w-0">
-        <span className="type-label text-muted-foreground">{props.role}</span>
-        <span className="truncate font-bold">{props.label}</span>
-      </div>
-    </div>
-  )
-}
