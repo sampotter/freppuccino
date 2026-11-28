@@ -58,17 +58,24 @@ public static class FrepFieldBuilder
                 continue;
             }
             var terms = n.Operands.Select(Ref).ToList();
-            // Union skips missing operands; intersect with one missing is empty; difference needs its base.
-            bool empty = n.Op switch
+            FieldOp? runOp = null;
+            var run = new List<FieldRef>();
+            for (int i = 0; i < terms.Count; i++)
             {
-                FrepOp.Union => false,
-                FrepOp.Intersect => terms.Contains(null),
-                _ => terms.Count == 0 || terms[0] == null,
-            };
-            var live = terms.OfType<FieldRef>().ToList();
-            if (empty || live.Count == 0) continue;
-            var op = n.Op switch { FrepOp.Union => FieldOp.Union, FrepOp.Intersect => FieldOp.Intersect, _ => FieldOp.Difference };
-            nodeRef[n.Id] = FieldRef.Node(field.AddNode(op, n.K, live, m));
+                if (terms[i] is not { } t) continue;
+                var mode = n.ModeAt(i);
+                if (run.Count == 0)
+                {
+                    if (mode == FrepMode.Add) run.Add(t);
+                    continue;
+                }
+                var op = mode switch { FrepMode.Add => FieldOp.Union, FrepMode.Intersect => FieldOp.Intersect, _ => FieldOp.Difference };
+                if (runOp is { } prev && prev != op) run = [FieldRef.Node(field.AddNode(prev, n.K, run))];
+                runOp = op;
+                run.Add(t);
+            }
+            if (run.Count == 0) continue;
+            nodeRef[n.Id] = FieldRef.Node(field.AddNode(runOp ?? FieldOp.Union, n.K, run, m));
         }
 
         roots = [];

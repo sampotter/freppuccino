@@ -102,6 +102,55 @@ public sealed class UiController : IDisposable
         RhinoApp.EscapeKeyPressed += OnEscape;
         Command.BeginCommand += OnBeginCommand;
         ShaderBuilds.Changed += OnShaderBuilds;
+        FrepDisplaySettings.Changed += OnDisplayChanged;
+        TabRequested += OnTabRequested;
+    }
+
+    static string? pendingTab;
+    static event Action<string>? TabRequested;
+
+    public static void ShowTab(string tab)
+    {
+        pendingTab = tab;
+        TabRequested?.Invoke(tab);
+    }
+
+    void OnTabRequested(string tab) => web.Send(new ShowTabMessage(tab));
+
+    void OnDisplayChanged()
+    {
+        if (RhinoDoc.ActiveDoc is { } doc) web.Send(new SettingsMessage(Settings(doc)));
+    }
+
+    static UiSettings Settings(RhinoDoc doc) => new(doc.ModelUnitSystem.ToString(), new DisplayInfo(
+        FrepDisplaySettings.Cutters.ToString(), FrepDisplaySettings.OtherShapes.ToString(),
+        FrepDisplaySettings.Geometry.ToString(), FrepDisplaySettings.HiddenLines.ToString()));
+
+    void SetDisplay(SetDisplayRequest request)
+    {
+        static T? Parse<T>(string? s) where T : struct, Enum =>
+            s == null ? null : Enum.TryParse<T>(s, out var v) && Enum.IsDefined(v) ? v : throw new JsonException($"unknown display value '{s}'");
+        if (Parse<ShapeDisplay>(request.Cutters) is { } c) FrepDisplaySettings.Cutters = c;
+        if (Parse<ShapeDisplay>(request.OtherShapes) is { } o) FrepDisplaySettings.OtherShapes = o;
+        if (Parse<HiddenLineDisplay>(request.HiddenLines) is { } h) FrepDisplaySettings.HiddenLines = h;
+        if (Parse<GeometryDisplay>(request.Geometry) is { } g)
+        {
+            bool applied;
+            try
+            {
+                FrepDisplaySettings.Geometry = g;
+                applied = FrepDisplaySettings.Geometry == g;
+            }
+            catch (Exception)
+            {
+                applied = false;
+            }
+            if (!applied)
+            {
+                web.Send(new NoticeMessage("warning", "Couldn't apply that display setting."));
+                OnDisplayChanged();
+            }
+        }
     }
 
     void OnShaderBuilds() => web.Send(new CompilingMessage(ShaderBuilds.Active));
@@ -119,6 +168,8 @@ public sealed class UiController : IDisposable
         RhinoDoc.ModifyObjectAttributes -= OnModifyAttributes;
         FrepTrees.Changed -= OnTreeChanged;
         ShaderBuilds.Changed -= OnShaderBuilds;
+        FrepDisplaySettings.Changed -= OnDisplayChanged;
+        TabRequested -= OnTabRequested;
         NodeSelectionChanged -= OnNodeSelectionChanged;
         RhinoApp.Idle -= OnIdle;
         RhinoApp.EscapeKeyPressed -= OnEscape;
@@ -240,7 +291,7 @@ public sealed class UiController : IDisposable
         sceneDirty = selectionDirty = false;
         sentFrepMode = FrepMode(doc);
         var theme = Rhino.Runtime.HostUtils.RunningInDarkMode ? "dark" : "light";
-        web.Send(new StateMessage(BuildScene(doc), SelectedIds(doc), new UiSettings(doc.ModelUnitSystem.ToString()), theme, sentFrepMode));
+        web.Send(new StateMessage(BuildScene(doc), SelectedIds(doc), Settings(doc), theme, sentFrepMode, doc.RuntimeSerialNumber.ToString()));
     }
 
     static string NodeKey(int id) => FrepTree.NodeName(id);
@@ -264,6 +315,7 @@ public sealed class UiController : IDisposable
 
     static string ToKind(FrepOp op) => op switch
     {
+        FrepOp.Group => OperationKind.Group,
         FrepOp.Union => OperationKind.Union,
         FrepOp.Intersect => OperationKind.Intersect,
         FrepOp.Difference => OperationKind.Subtract,
@@ -273,6 +325,16 @@ public sealed class UiController : IDisposable
         FrepOp.Blend => OperationKind.Blend,
         FrepOp.Offset => OperationKind.Offset,
         _ => throw new ArgumentOutOfRangeException(nameof(op)),
+    };
+
+    static string ModeKey(Csg.FrepMode m) => m switch { Csg.FrepMode.Subtract => RowMode.Subtract, Csg.FrepMode.Intersect => RowMode.Intersect, _ => RowMode.Add };
+
+    static Csg.FrepMode? ParseMode(string mode) => mode switch
+    {
+        RowMode.Add => Csg.FrepMode.Add,
+        RowMode.Subtract => Csg.FrepMode.Subtract,
+        RowMode.Intersect => Csg.FrepMode.Intersect,
+        _ => null,
     };
 
     static FrepOp? ParseKind(string kind) => kind switch
@@ -302,15 +364,16 @@ public sealed class UiController : IDisposable
                 var names = n.Op.ParamNames();
                 bool refOk = doc.Objects.FindId(n.Ref) is { IsDeleted: false } r && FrepRefs.Fits(n.Op, r.Geometry);
                 return built[n.Id] = new SceneNode(
-                    Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
+                    Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: $"{n.Op} {n.Id}", Visible: !n.Hidden, Locked: false,
                     Op: ToKind(n.Op), Params: names.Select((name, i) => (name, i)).ToDictionary(x => x.name, x => n.Param(x.i)),
                     K: null,
                     Children: children, Ref: ObjectKey(n.Ref), RefMissing: refOk ? null : true);
             }
             return built[n.Id] = new SceneNode(
-                Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.Name, Visible: !n.Hidden, Locked: false,
+                Id: NodeKey(n.Id), Kind: SceneNodeKind.Operation, Name: n.IsGroup ? $"Group {n.Id}" : $"{n.Op} {n.Id}", Visible: !n.Hidden, Locked: false,
                 Op: ToKind(n.Op), K: n.K, Children: children,
-                Placement: n.Op is FrepOp.Union or FrepOp.Intersect or FrepOp.Difference ? PlacementKey(Placements(tree, n.Id, memo)) : null);
+                Placement: n.IsGroup ? PlacementKey(Placements(tree, n.Id, memo)) : null,
+                Modes: n.IsGroup ? [.. Enumerable.Range(0, n.Operands.Length).Select(i => ModeKey(n.ModeAt(i)))] : null);
         }
 
         var roots = tree.Nodes.Where(n => !tree.IsReferenced(FrepOperand.Node(n.Id))).Select(Node).ToList();
@@ -339,7 +402,7 @@ public sealed class UiController : IDisposable
 
     static readonly Dictionary<string, string> OperationLabels = new()
     {
-        [OperationKind.Union] = "Union", [OperationKind.Subtract] = "Subtract", [OperationKind.Intersect] = "Intersect",
+        [OperationKind.Group] = "Group",
         [OperationKind.Twist] = "Twist", [OperationKind.Bend] = "Bend", [OperationKind.Repeat] = "Repeat",
         [OperationKind.Blend] = "Blend", [OperationKind.Offset] = "Offset",
     };
@@ -479,6 +542,13 @@ public sealed class UiController : IDisposable
                 case "ready":
                     SendState(doc);
                     OnShaderBuilds();
+                    if (pendingTab is { } tab) web.Send(new ShowTabMessage(tab));
+                    break;
+                case "tabShown":
+                    pendingTab = null;
+                    break;
+                case "setDisplay":
+                    SetDisplay(Parse<SetDisplayRequest>(message));
                     break;
                 case "select":
                     using (Selection.FrepSelection.Explicit()) Select(doc, Parse<SelectRequest>(message));
@@ -518,6 +588,9 @@ public sealed class UiController : IDisposable
                     break;
                 case "moveNode":
                     MoveNode(doc, Parse<MoveNodeRequest>(message));
+                    break;
+                case "setModes":
+                    SetModes(doc, Parse<SetModesRequest>(message));
                     break;
                 case "aiTool":
                     RunAiTool(doc, Parse<AiToolRequest>(message));
@@ -754,11 +827,9 @@ public sealed class UiController : IDisposable
         var tree0 = FrepTrees.Get(doc);
         var operands = request.Operands.Select(k => ParseOperand(tree0, k)).OfType<FrepOperand>().Distinct().ToList();
         bool topLevel = operands.Count >= 2 && !operands.Any(tree0.IsReferenced);
-        if (!topLevel || (op == FrepOp.Difference && operands.Count != 2))
+        if (!topLevel)
         {
-            web.Send(new NoticeMessage("warning", op == FrepOp.Difference
-                ? "Subtract takes exactly two top-level nodes."
-                : "Select two or more top-level nodes."));
+            web.Send(new NoticeMessage("warning", "Select two or more top-level nodes."));
             return;
         }
         var (tree, node) = tree0.Add(op, Math.Max(0, request.K), operands);
@@ -785,7 +856,7 @@ public sealed class UiController : IDisposable
     {
         var tree = FrepTrees.Get(doc);
         if (!TryNode(tree, request.Id, out var id) || tree.Find(id) is not { } node) return;
-        if (node.Op is not (FrepOp.Union or FrepOp.Intersect or FrepOp.Difference)) return;
+        if (!node.IsGroup) return;
         var (next, offset) = tree.WrapOver(FrepOp.Offset, 0, id);
         FrepTrees.Set(doc, next, "Offset");
         doc.Objects.UnselectAll();
@@ -813,12 +884,34 @@ public sealed class UiController : IDisposable
             if (!request.Preview) FrepTrees.Commit(doc);
             return;
         }
-        if (ParseKind(request.Op) is not { } op) throw new JsonException($"unknown op '{request.Op}'");
-        if (node.Op.IsWarp()) return;
-        if (op == FrepOp.Difference && node.Op != FrepOp.Difference && node.Operands.Length != 2) return;
+        if (!node.IsGroup) return;
+        var next = request.Op == OperationKind.Group ? tree.WithK(id, k)
+            : ParseKind(request.Op) is { } op ? tree.WithOp(id, op, k)
+            : throw new JsonException($"unknown op '{request.Op}'");
         // Previews apply live; the final message records the whole gesture as one undo step.
-        if (node.Op != op || node.K != k) FrepTrees.Preview(doc, tree.WithOp(id, op, k), $"Edit {node.Name}");
+        if (!next.Find(id)!.Equals(node)) FrepTrees.Preview(doc, next, $"Edit {node.Name}");
         if (!request.Preview) FrepTrees.Commit(doc);
+    }
+
+    void SetModes(RhinoDoc doc, SetModesRequest request)
+    {
+        var tree = FrepTrees.Get(doc);
+        var rows = new List<(int, FrepOperand, Csg.FrepMode)>();
+        foreach (var r in request.Rows)
+        {
+            if (!TryNode(tree, r.Parent, out var parent) || ParseOperand(tree, r.Child) is not { } child || ParseMode(r.Mode) is not { } mode)
+                throw new JsonException($"bad mode row {r.Parent} / {r.Child} / {r.Mode}");
+            rows.Add((parent, child, mode));
+        }
+        FrepTree next;
+        try { next = tree.WithModes(rows); }
+        catch (ArgumentException ex)
+        {
+            web.Send(new NoticeMessage("warning", ex.Message));
+            return;
+        }
+        if (!next.Nodes.SequenceEqual(tree.Nodes)) FrepTrees.Set(doc, next, rows.Count == 1 ? "Set mode" : "Set modes");
+        doc.Views.Redraw();
     }
 
     static void SetNodeParam(RhinoDoc doc, SetNodeParamRequest request)
@@ -898,9 +991,9 @@ public sealed class UiController : IDisposable
         int? from = request.From is { } f ? TryNode(tree, f, out var fid) ? fid : throw new JsonException($"unknown node '{f}'") : null;
         int? to = request.To is { } t ? TryNode(tree, t, out var tid) ? tid : throw new JsonException($"unknown node '{t}'") : null;
         if (from == null && to == null) return;
-        if (to is { } target && tree.Find(target)!.Op is not (FrepOp.Union or FrepOp.Intersect or FrepOp.Difference))
+        if (to is { } target && !tree.Find(target)!.IsGroup)
         {
-            web.Send(new NoticeMessage("warning", "Drop onto a union, subtract, or intersect."));
+            web.Send(new NoticeMessage("warning", "Drop onto a group."));
             return;
         }
         var placed = Placements(tree, from);

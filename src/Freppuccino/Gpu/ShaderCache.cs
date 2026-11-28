@@ -73,14 +73,24 @@ public static class ShaderCache
     public static void Read(BinaryArchiveReader r)
     {
         r.Read3dmChunkVersion(out var major, out _);
-        if (major != Major || r.ReadString() != Format || r.ReadString() != Build) return;
+        if (major != Major) throw new InvalidDataException($"shader cache version {major} unsupported");
+        var format = r.ReadString();
+        var build = r.ReadString();
+        bool usable = format == Format && build == Build;
         int count = r.ReadInt();
         for (int i = 0; i < count; i++)
         {
             var hash = r.ReadString();
-            var vs = Unpack(r.ReadByteArray());
-            var ps = Unpack(r.ReadByteArray());
-            if (vs.Length > 0 && ps.Length > 0) Add(hash, vs, ps);
+            var vsPacked = r.ReadByteArray();
+            var psPacked = r.ReadByteArray();
+            if (!usable) continue;
+            try
+            {
+                var vs = Unpack(vsPacked);
+                var ps = Unpack(psPacked);
+                if (vs.Length > 0 && ps.Length > 0) Add(hash, vs, ps);
+            }
+            catch (InvalidDataException) { }
         }
     }
 

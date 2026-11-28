@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { createMockHost } from './mock-host'
-import type { HostMessage, Id, SceneNode, Theme, UiMessage, UiSettings } from './protocol'
+import type { HostMessage, Id, PanelTab, SceneNode, Theme, UiMessage, UiSettings } from './protocol'
 
 // ── Transport ──
 // One shape for every host (post + listen); the store doesn't know which it got. C# side: Ui/WebViewHost.cs.
@@ -67,6 +67,8 @@ export interface HostState {
   frepMode: boolean
   notice: Notice | null
   compiling: number
+  tabRequest: { tab: PanelTab; seq: number } | null
+  doc: string
 }
 
 const transport = createTransport()
@@ -76,11 +78,13 @@ let state: HostState = {
   synced: false,
   scene: [],
   selection: [],
-  settings: { units: '' },
+  settings: { units: '', display: { cutters: 'Silhouette', otherShapes: 'Silhouette', geometry: 'Ghosted', hiddenLines: 'Faint' } },
   theme: window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
   frepMode: true,
   notice: null,
   compiling: 0,
+  tabRequest: null,
+  doc: '',
 }
 const listeners = new Set<() => void>()
 let noticeId = 0
@@ -102,13 +106,20 @@ function orderSelection(prev: Id[], next: Id[]): Id[] {
 transport.listen((m) => {
   switch (m.type) {
     case 'state':
-      set({ synced: true, scene: m.scene, selection: m.selection, settings: m.settings, theme: m.theme, frepMode: m.frepMode })
+      set({ synced: true, scene: m.scene, selection: m.selection, settings: m.settings, theme: m.theme, frepMode: m.frepMode, doc: m.doc })
       break
     case 'scene':
       set({ scene: m.scene })
       break
     case 'view':
       set({ frepMode: m.frepMode })
+      break
+    case 'settings':
+      set({ settings: m.settings })
+      break
+    case 'showTab':
+      set({ tabRequest: { tab: m.tab, seq: (state.tabRequest?.seq ?? 0) + 1 } })
+      transport.post({ type: 'tabShown' })
       break
     case 'selection':
       set({ selection: orderSelection(state.selection, m.ids) })

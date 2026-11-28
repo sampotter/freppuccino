@@ -106,6 +106,12 @@
         </text>
         <left_macro_id>b057d412-7505-0b0e-6e00-651644dd401f</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="8e3b71c5-2d94-4a6f-b580-6c1f9e2a7d43">
+        <text>
+          <locale_1033>Offset</locale_1033>
+        </text>
+        <left_macro_id>6f2c9e14-8b37-4d51-a0c6-3e7b19d4f582</left_macro_id>
+      </tool_bar_item>
       <tool_bar_item guid="619eb50b-cf69-7784-6c11-9aee73352975" button_style="spacer" />
       <tool_bar_item guid="7416ec19-0f0e-8e0f-b499-b9b09d5363cb">
         <text>
@@ -129,7 +135,7 @@
       <tool_bar_item guid="9b4e0d27-61c8-4f5a-8e3b-c27a19d6f054" button_style="spacer" />
       <tool_bar_item guid="5c1e8a42-7d93-4b06-a2f8-91e3d6c0b417">
         <text>
-          <locale_1033>Display</locale_1033>
+          <locale_1033>Settings</locale_1033>
         </text>
         <left_macro_id>a7d24f19-3e85-4c60-b1d9-6f0e2c8a5b93</left_macro_id>
       </tool_bar_item>
@@ -138,15 +144,15 @@
   <macros>
     <macro_item guid="a7d24f19-3e85-4c60-b1d9-6f0e2c8a5b93" bitmap_id="e2b97c05-14d8-4f3a-9c6e-58a0d3f71b2c">
       <button_text>
-        <locale_1033>Display</locale_1033>
+        <locale_1033>Settings</locale_1033>
       </button_text>
       <menu_text>
-        <locale_1033>Display</locale_1033>
+        <locale_1033>Settings</locale_1033>
       </menu_text>
       <tooltip>
-        <locale_1033>Display settings</locale_1033>
+        <locale_1033>Settings</locale_1033>
       </tooltip>
-      <script>! _FrepDisplay</script>
+      <script>! _FrepSettings</script>
     </macro_item>
     <macro_item guid="b5d0fff3-4b51-acce-3cc8-d28d1673c40c" bitmap_id="a985497e-6171-6a08-1868-da55a972ee13">
       <button_text>
@@ -361,14 +367,26 @@
       </tooltip>
       <script>! _Freppuccino</script>
     </macro_item>
+    <macro_item guid="6f2c9e14-8b37-4d51-a0c6-3e7b19d4f582" bitmap_id="1a8d5c3e-7f24-4b96-8e01-c9d27b6a4f35">
+      <button_text>
+        <locale_1033>Offset</locale_1033>
+      </button_text>
+      <menu_text>
+        <locale_1033>Offset</locale_1033>
+      </menu_text>
+      <tooltip>
+        <locale_1033>Offset a group's surface</locale_1033>
+      </tooltip>
+      <script>! _FOffset</script>
+    </macro_item>
   </macros>
   <icons>
     <icon guid="e2b97c05-14d8-4f3a-9c6e-58a0d3f71b2c">
       <light>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="#3B2620" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 6.5H20.5"/><path d="M3.5 12H20.5"/><path d="M3.5 17.5H20.5"/></g><g fill="#E0954A" stroke="#3B2620" stroke-width="1.6"><circle cx="15.5" cy="6.5" r="2.4"/><circle cx="8.5" cy="12" r="2.4"/><circle cx="13" cy="17.5" r="2.4"/></g></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path d="M10.21 5.34 L10.56 2.91 L13.44 2.91 L13.79 5.34 L15.45 6.02 L17.41 4.56 L19.44 6.59 L17.98 8.55 L18.66 10.21 L21.09 10.56 L21.09 13.44 L18.66 13.79 L17.98 15.45 L19.44 17.41 L17.41 19.44 L15.45 17.98 L13.79 18.66 L13.44 21.09 L10.56 21.09 L10.21 18.66 L8.55 17.98 L6.59 19.44 L4.56 17.41 L6.02 15.45 L5.34 13.79 L2.91 13.44 L2.91 10.56 L5.34 10.21 L6.02 8.55 L4.56 6.59 L6.59 4.56 L8.55 6.02Z" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="12" cy="12" r="2.9" fill="#FFFDF9" stroke="#3B2620" stroke-width="1.6"/></svg>
       </light>
       <dark>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><g fill="none" stroke="#FBEFE2" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 6.5H20.5"/><path d="M3.5 12H20.5"/><path d="M3.5 17.5H20.5"/></g><g fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6"><circle cx="15.5" cy="6.5" r="2.4"/><circle cx="8.5" cy="12" r="2.4"/><circle cx="13" cy="17.5" r="2.4"/></g></svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path d="M10.21 5.34 L10.56 2.91 L13.44 2.91 L13.79 5.34 L15.45 6.02 L17.41 4.56 L19.44 6.59 L17.98 8.55 L18.66 10.21 L21.09 10.56 L21.09 13.44 L18.66 13.79 L17.98 15.45 L19.44 17.41 L17.41 19.44 L15.45 17.98 L13.79 18.66 L13.44 21.09 L10.56 21.09 L10.21 18.66 L8.55 17.98 L6.59 19.44 L4.56 17.41 L6.02 15.45 L5.34 13.79 L2.91 13.44 L2.91 10.56 L5.34 10.21 L6.02 8.55 L4.56 6.59 L6.59 4.56 L8.55 6.02Z" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="12" cy="12" r="2.9" fill="#FFFDF9" stroke="#FBEFE2" stroke-width="1.6"/></svg>
       </dark>
     </icon>
     <icon guid="b33b2a55-1af8-86c0-811d-875514fc4fd2">
@@ -492,14 +510,12 @@
     <icon guid="026c45f6-5ee4-5517-3096-35f6d872f73e">
       <light>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <circle cx="12" cy="12" r="10.2" fill="none" stroke="#3B2620" stroke-width="1" stroke-dasharray="1.6 2.2" opacity=".55" />
           <circle cx="12" cy="12" r="6.6" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
           <ellipse cx="9.8" cy="9.6" rx="1.6" ry="1.1" fill="#FFFDF9" opacity=".9" transform="rotate(-30 9.8 9.6)" />
         </svg>
       </light>
       <dark>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <circle cx="12" cy="12" r="10.2" fill="none" stroke="#FBEFE2" stroke-width="1" stroke-dasharray="1.6 2.2" opacity=".55" />
           <circle cx="12" cy="12" r="6.6" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
           <ellipse cx="9.8" cy="9.6" rx="1.6" ry="1.1" fill="#FFFDF9" opacity=".9" transform="rotate(-30 9.8 9.6)" />
         </svg>
@@ -576,7 +592,6 @@
     <icon guid="4765cdb8-9ee4-2057-022d-f35c15650995">
       <light>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <ellipse cx="12" cy="12" rx="11" ry="7.6" fill="none" stroke="#3B2620" stroke-width="1" stroke-dasharray="1.6 2.2" opacity=".55" />
           <ellipse cx="12" cy="12" rx="8.4" ry="5.2" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
           <path d="M3.6 12 A8.4 2 0 0 0 20.4 12" fill="none" stroke="#3B2620" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 1.6" opacity=".5" />
           <ellipse cx="8.8" cy="9.8" rx="1.8" ry="1" fill="#FFFDF9" opacity=".9" transform="rotate(-18 8.8 9.8)" />
@@ -584,7 +599,6 @@
 </light>
       <dark>
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <ellipse cx="12" cy="12" rx="11" ry="7.6" fill="none" stroke="#FBEFE2" stroke-width="1" stroke-dasharray="1.6 2.2" opacity=".55" />
           <ellipse cx="12" cy="12" rx="8.4" ry="5.2" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
           <path d="M3.6 12 A8.4 2 0 0 0 20.4 12" fill="none" stroke="#FBEFE2" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 1.6" opacity=".5" />
           <ellipse cx="8.8" cy="9.8" rx="1.8" ry="1" fill="#FFFDF9" opacity=".9" transform="rotate(-18 8.8 9.8)" />
@@ -659,16 +673,10 @@
     </icon>
     <icon guid="e2116ad5-4551-0ed6-76ab-05e51a5921e4">
       <light>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <circle cx="12" cy="12" r="9" fill="#FFFDF9" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <path d="M12.22 11.44 L12.39 11.39 L12.59 11.39 L12.80 11.45 L13.01 11.57 L13.20 11.76 L13.34 12.00 L13.44 12.29 L13.47 12.62 L13.42 12.97 L13.28 13.32 L13.06 13.65 L12.76 13.95 L12.38 14.18 L11.93 14.34 L11.44 14.40 L10.92 14.35 L10.41 14.19 L9.91 13.91 L9.47 13.52 L9.10 13.03 L8.83 12.45 L8.68 11.81 L8.66 11.12 L8.79 10.42 L9.07 9.74 L9.50 9.11 L10.06 8.56 L10.75 8.13 L11.53 7.83 L12.38 7.70 L13.26 7.74 L14.14 7.96 L14.98 8.37 L15.74 8.96 L16.37 9.70 L16.86 10.59 L17.17 11.57 L17.28 12.62 L17.17 13.69 L16.83 14.75 L16.29 15.73 L15.53 16.61 L14.60 17.33 L13.52 17.86 L12.33 18.17 L11.08 18.24 L9.82 18.05 L8.60 17.60 L7.47 16.90 L6.48 15.98 L5.69 14.85 L5.13 13.57 L4.83 12.18 L4.82 10.73 L5.10 9.28 L5.67 7.90 L6.52 6.63" fill="none" stroke="#E0954A" stroke-width="2" stroke-linecap="round" />
-        </svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path d="M12 1.6 V22.4" fill="none" stroke="#3B2620" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 1.6" opacity=".5"/><path d="M12 7.875 C14 9 16 10 16 12 C16 14 14 15 12 16.125 C10 15 8 14 8 12 C8 10 10 9 12 7.875 Z" fill="#F27A93" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M8 3 L16 3 C16 5.5 14 6.75 12 7.875 C10 6.75 8 5.5 8 3 Z" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M12 16.125 C14 17.25 16 18.5 16 21 L8 21 C8 18.5 10 17.25 12 16.125 Z" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M10 4.6 L11.2 6" stroke="#FFFDF9" stroke-width="1.3" stroke-linecap="round" opacity=".7" fill="none"/></svg>
       </light>
       <dark>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <circle cx="12" cy="12" r="9" fill="#FFFDF9" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <path d="M12.22 11.44 L12.39 11.39 L12.59 11.39 L12.80 11.45 L13.01 11.57 L13.20 11.76 L13.34 12.00 L13.44 12.29 L13.47 12.62 L13.42 12.97 L13.28 13.32 L13.06 13.65 L12.76 13.95 L12.38 14.18 L11.93 14.34 L11.44 14.40 L10.92 14.35 L10.41 14.19 L9.91 13.91 L9.47 13.52 L9.10 13.03 L8.83 12.45 L8.68 11.81 L8.66 11.12 L8.79 10.42 L9.07 9.74 L9.50 9.11 L10.06 8.56 L10.75 8.13 L11.53 7.83 L12.38 7.70 L13.26 7.74 L14.14 7.96 L14.98 8.37 L15.74 8.96 L16.37 9.70 L16.86 10.59 L17.17 11.57 L17.28 12.62 L17.17 13.69 L16.83 14.75 L16.29 15.73 L15.53 16.61 L14.60 17.33 L13.52 17.86 L12.33 18.17 L11.08 18.24 L9.82 18.05 L8.60 17.60 L7.47 16.90 L6.48 15.98 L5.69 14.85 L5.13 13.57 L4.83 12.18 L4.82 10.73 L5.10 9.28 L5.67 7.90 L6.52 6.63" fill="none" stroke="#E0954A" stroke-width="2" stroke-linecap="round" />
-        </svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path d="M12 1.6 V22.4" fill="none" stroke="#FBEFE2" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 1.6" opacity=".5"/><path d="M12 7.875 C14 9 16 10 16 12 C16 14 14 15 12 16.125 C10 15 8 14 8 12 C8 10 10 9 12 7.875 Z" fill="#F27A93" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M8 3 L16 3 C16 5.5 14 6.75 12 7.875 C10 6.75 8 5.5 8 3 Z" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M12 16.125 C14 17.25 16 18.5 16 21 L8 21 C8 18.5 10 17.25 12 16.125 Z" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M10 4.6 L11.2 6" stroke="#FFFDF9" stroke-width="1.3" stroke-linecap="round" opacity=".7" fill="none"/></svg>
       </dark>
     </icon>
     <icon guid="f5541697-7f94-19f4-9077-ea65cafb7562">
@@ -689,30 +697,10 @@
     </icon>
     <icon guid="e10558ab-461f-59e3-176b-d2983cea74ef">
       <light>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <circle cx="5.5" cy="5.5" r="2.5" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="5.5" cy="12" r="2.5" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="5.5" cy="18.5" r="2.5" fill="#F27A93" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="12" cy="5.5" r="2.5" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="12" cy="12" r="2.5" fill="#F27A93" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="12" cy="18.5" r="2.5" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="18.5" cy="5.5" r="2.5" fill="#F27A93" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="18.5" cy="12" r="2.5" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="18.5" cy="18.5" r="2.5" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-        </svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5" fill="none" stroke="#3B2620" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 1.6" opacity=".5"/><rect x="13.2" y="5.2" width="5.6" height="5.6" rx="1" fill="#E0954A" opacity=".55" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><rect x="5.2" y="13.2" width="5.6" height="5.6" rx="1" fill="#E0954A" opacity=".55" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><rect x="13.2" y="13.2" width="5.6" height="5.6" rx="1" fill="#E0954A" opacity=".55" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><rect x="5.2" y="5.2" width="5.6" height="5.6" rx="1" fill="#E0954A" stroke="#3B2620" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M7 7.2 V8.8" stroke="#FFFDF9" stroke-width="1.3" stroke-linecap="round" opacity=".7" fill="none"/></svg>
       </light>
       <dark>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-          <circle cx="5.5" cy="5.5" r="2.5" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="5.5" cy="12" r="2.5" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="5.5" cy="18.5" r="2.5" fill="#F27A93" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="12" cy="5.5" r="2.5" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="12" cy="12" r="2.5" fill="#F27A93" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="12" cy="18.5" r="2.5" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="18.5" cy="5.5" r="2.5" fill="#F27A93" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="18.5" cy="12" r="2.5" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="18.5" cy="18.5" r="2.5" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" />
-        </svg>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><rect x="3.5" y="3.5" width="17" height="17" rx="1.5" fill="none" stroke="#FBEFE2" stroke-width="1" stroke-linecap="round" stroke-dasharray="1 1.6" opacity=".5"/><rect x="13.2" y="5.2" width="5.6" height="5.6" rx="1" fill="#E0954A" opacity=".55" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><rect x="5.2" y="13.2" width="5.6" height="5.6" rx="1" fill="#E0954A" opacity=".55" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><rect x="13.2" y="13.2" width="5.6" height="5.6" rx="1" fill="#E0954A" opacity=".55" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><rect x="5.2" y="5.2" width="5.6" height="5.6" rx="1" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M7 7.2 V8.8" stroke="#FFFDF9" stroke-width="1.3" stroke-linecap="round" opacity=".7" fill="none"/></svg>
       </dark>
     </icon>
     <icon guid="451d7e25-0378-3019-f034-71fbce0a0452">
@@ -764,6 +752,14 @@
           <circle cx="12" cy="12" r="8" fill="none" stroke="#FBEFE2" stroke-width="1.6" />
         </svg>
 </dark>
+    </icon>
+    <icon guid="1a8d5c3e-7f24-4b96-8e01-c9d27b6a4f35">
+      <light>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.2" stroke="#3B2620" stroke-width="1.4" stroke-dasharray="2.2 1.8"/><circle cx="12" cy="12" r="6.2" fill="#E0954A" stroke="#3B2620" stroke-width="1.6"/><ellipse cx="10.1" cy="10" rx="1.4" ry="0.9" fill="#FFFDF9" opacity=".9" transform="rotate(-28 10.1 10)"/></svg>
+      </light>
+      <dark>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.2" stroke="#FBEFE2" stroke-width="1.4" stroke-dasharray="2.2 1.8"/><circle cx="12" cy="12" r="6.2" fill="#E0954A" stroke="#FBEFE2" stroke-width="1.6"/><ellipse cx="10.1" cy="10" rx="1.4" ry="0.9" fill="#FFFDF9" opacity=".9" transform="rotate(-28 10.1 10)"/></svg>
+      </dark>
     </icon>
   </icons>
   <bitmaps>

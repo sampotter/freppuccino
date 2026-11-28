@@ -295,34 +295,38 @@ public static class FrepShaderGen
             }
 
             var terms = n.Operands.Select(o => Eval(o, c)).ToList();
-            List<string>? live = n.Op switch
-            {
-                FrepOp.Union => [.. terms.OfType<string>()],
-                FrepOp.Intersect => terms.Contains(null) ? null : [.. terms.OfType<string>()],
-                _ => terms.Count == 0 || terms[0] == null ? null : [.. terms.OfType<string>()],
-            };
-            if (live is not { Count: > 0 }) return null;
             int slot = kSlot[id];
             var k = $"u.data[{kBase + slot / 4}].{"xyzw"[slot % 4]}";
-            map.Append($"    float {v} = {live[0]};\n");
-            color.Append($"    vec4 {v} = {live[0]};\n");
-            foreach (var t in live.Skip(1))
+            bool started = false, added = false;
+            for (int i = 0; i < terms.Count; i++)
             {
-                map.Append(n.Op switch
+                if (terms[i] is not { } t) continue;
+                var mode = n.ModeAt(i);
+                if (!started)
                 {
-                    FrepOp.Union => $"    {v} = smin({v}, {t}, {k});\n",
-                    FrepOp.Intersect => $"    {v} = smax({v}, {t}, {k});\n",
+                    if (mode != FrepMode.Add) continue;
+                    map.Append($"    float {v} = {t};\n");
+                    color.Append($"    vec4 {v} = {t};\n");
+                    started = true;
+                    continue;
+                }
+                added |= mode == FrepMode.Add;
+                map.Append(mode switch
+                {
+                    FrepMode.Add => $"    {v} = smin({v}, {t}, {k});\n",
+                    FrepMode.Intersect => $"    {v} = smax({v}, {t}, {k});\n",
                     _ => $"    {v} = smax({v}, -{t}, {k});\n",
                 });
-                color.Append(n.Op switch
+                color.Append(mode switch
                 {
-                    FrepOp.Union => $"    {v} = cmin({v}, {t}, {k});\n",
-                    FrepOp.Intersect => $"    {v} = cmax({v}, {t}, {k});\n",
+                    FrepMode.Add => $"    {v} = cmin({v}, {t}, {k});\n",
+                    FrepMode.Intersect => $"    {v} = cmax({v}, {t}, {k});\n",
                     _ => $"    {v} = csub({v}, {t}, {k});\n",
                 });
             }
+            if (!started) return null;
             // FZebra: the hit point lies on this union's surface (incl. its blend fillets).
-            if (n.Op == FrepOp.Union) color.Append($"    zeb = max(zeb, 1.0 - step(tol, abs({v}.w)));\n");
+            if (added) color.Append($"    zeb = max(zeb, 1.0 - step(tol, abs({v}.w)));\n");
             return v;
         }
 
@@ -844,7 +848,11 @@ public static class FrepShaderGen
             }
             else if (tree.Find(o.NodeId) is { Hidden: false } n)
             {
-                if (n.Op == FrepOp.Difference) { if (n.Operands.Length > 0) b = Of(n.Operands[0]); }
+                if (n.IsGroup)
+                {
+                    for (int i = 0; i < n.Operands.Length; i++)
+                        if (n.ModeAt(i) != FrepMode.Subtract) b.Union(Of(n.Operands[i]));
+                }
                 else foreach (var c in n.Operands) b.Union(Of(c));
                 if (b.IsValid && warp.TryGetValue(n.Id, out var w)) b = Warped(b, w);
                 if (b.IsValid && n.HasMatrix) b.Transform(n.M); // node transform: box of the mapped corners

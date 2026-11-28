@@ -80,7 +80,6 @@ public sealed class ShaderConduit : DisplayConduit
         earlyOwnOutlines = false;
         earlySerial = -1;
         if (!FreppuccinoDisplayMode.IsActive(dp)) return;
-        TraceBegin(dp);
         try
         {
             if (GpuBackends.For(dp) is not { } gpu || !WritesDepth(gpu, dp)) return;
@@ -92,7 +91,6 @@ public sealed class ShaderConduit : DisplayConduit
             earlyOwnOutlines = own;
             earlySerial = after > before ? after : -1;
             early = dp.Viewport?.Id;
-            Trace(dp, "pre-after-early", early, wrote, frame: true);
         }
         catch (Exception ex)
         {
@@ -135,16 +133,13 @@ public sealed class ShaderConduit : DisplayConduit
         var dp = e.Display;
         bool late = early != null && early == dp.Viewport?.Id, wroteDepth = late && earlyWroteDepth, own = late && earlyOwnOutlines;
         int serial = late ? earlySerial : -1;
-        Trace(dp, late ? "post-entry" : "post-entry-no-pre", early, wroteDepth, frame: !late);
         early = null;
         if (!FreppuccinoDisplayMode.IsActive(dp)) return;
         try
         {
             var gpu = GpuBackends.For(dp);
             if (gpu == null) return;
-            if (!late) TraceBegin(dp);
             bool drew = !late && DrawModel(gpu, dp, e.RhinoDoc, curves: true, depth: false).Drew;
-            if (!late) Trace(dp, "post-after-fallback", null, false);
             if (!AiCapture.Active && own) DrawOwnOutlines(gpu, dp, e.RhinoDoc, serial, wroteDepth);
 
             if (!AiCapture.Active) // AI screenshots: just the model
@@ -194,8 +189,6 @@ public sealed class ShaderConduit : DisplayConduit
 
     static void DrawOwnOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, int serial, bool wroteDepth)
     {
-        if (Gpu.D3D11.DepthTrace.Armed(dp)) Gpu.D3D11.DepthTrace.Reference(dp, gpu as Gpu.D3D11.D3D11Backend);
-        Trace(dp, "post-before-outlines", null, wroteDepth);
         if (gpu is not Gpu.D3D11.D3D11Backend d3d || serial < 0 || !wroteDepth)
         {
             if (!loggedOutlineSkip) RhinoApp.WriteLine("Freppuccino: cutter outlines skipped this frame (no current G-buffer).");
@@ -203,18 +196,8 @@ public sealed class ShaderConduit : DisplayConduit
             return;
         }
         float halfWidth = (float)(0.5 * Math.Ceiling(dp.DpiScale - 1e-3));
-        d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: true), ControlOutlines.UnselectedColor, ControlOutlines.HiddenAlpha / 255f, halfWidth, (float)OutlinePullPx);
+        d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: true), ControlOutlines.UnselectedColor, FrepDisplaySettings.HiddenLines == HiddenLineDisplay.Faint ? ControlOutlines.HiddenAlpha / 255f : 0f, halfWidth, (float)OutlinePullPx);
         d3d.DrawOutlines(dp, serial, ControlOutlines.Segments(dp, doc, cutters: false), ControlOutlines.UnselectedColor, 1f, halfWidth, (float)OutlinePullPx, added: true);
-        Trace(dp, "post-after-outlines", null, wroteDepth);
-    }
-
-    static void TraceBegin(DisplayPipeline dp) => Gpu.D3D11.DepthTrace.Begin(dp, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend);
-
-    static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false)
-    {
-        if (!Gpu.D3D11.DepthTrace.Armed(dp)) return;
-        if (frame) Gpu.D3D11.DepthTrace.Frame();
-        Gpu.D3D11.DepthTrace.Sample(dp, stage, GpuBackends.For(dp) as Gpu.D3D11.D3D11Backend, early, wrote);
     }
 
     static bool DrawProgram(IGpuBackend gpu, DisplayPipeline dp, ShaderSource program, byte[] uniforms, bool depth) =>
@@ -225,10 +208,6 @@ public sealed class ShaderConduit : DisplayConduit
     static int GBufferSerial(IGpuBackend gpu) => 0;
 
     static void DrawOwnOutlines(IGpuBackend gpu, DisplayPipeline dp, RhinoDoc doc, int serial, bool wroteDepth) { }
-
-    static void TraceBegin(DisplayPipeline dp) { }
-
-    static void Trace(DisplayPipeline dp, string stage, Guid? early, bool wrote, bool frame = false) { }
 
     static bool WritesDepth(IGpuBackend gpu, DisplayPipeline dp) => false;
 
@@ -241,7 +220,6 @@ public sealed class ShaderConduit : DisplayConduit
     protected override void DrawForeground(DrawEventArgs e)
     {
         var dp = e.Display;
-        if (dp != null) Trace(dp, "fore", null, false);
         if (dp == null || AiCapture.Active || !FreppuccinoDisplayMode.IsActive(dp) || GpuBackends.For(dp) == null) return;
         try
         {

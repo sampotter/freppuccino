@@ -34,6 +34,7 @@ public static partial class AiTools
         "add_operand" => AddOperand(doc, args),
         "remove_operand" => RemoveOperand(doc, args),
         "move" => Move(doc, args),
+        "set_mode" => SetMode(doc, args),
         "delete" => Delete(doc, args),
         "set_visible" => SetVisible(doc, args),
         "set_color" => SetColors(doc, args),
@@ -94,6 +95,7 @@ public static partial class AiTools
                     ["k"] = AiShapes.Round(n.K),
                     ["operands"] = new JsonArray([.. n.Operands.Select(x => (JsonNode)OperandRef(doc, x, refs))]),
                 };
+            if (n.IsGroup) o["modes"] = ModeNames(n);
             if (n.Hidden) o["visible"] = false;
             var used = UsedBy(FrepOperand.Node(n.Id));
             if (used.Count > 0) o["used_by"] = used;
@@ -556,6 +558,19 @@ public static partial class AiTools
         foreach (var c in n.Operands)
             if (into.Add(c)) AddDescendants(tree, c, into);
     }
+
+    static JsonArray ModeNames(FrepNode n) =>
+        new([.. Enumerable.Range(0, n.Operands.Length).Select(i => (JsonNode)ModeName(n.ModeAt(i)))]);
+
+    static string ModeName(FrepMode m) => m switch { FrepMode.Subtract => "subtract", FrepMode.Intersect => "intersect", _ => "add" };
+
+    static FrepMode ParseMode(string mode) => mode.ToLowerInvariant() switch
+    {
+        "add" or "union" => FrepMode.Add,
+        "subtract" or "difference" => FrepMode.Subtract,
+        "intersect" or "intersection" => FrepMode.Intersect,
+        _ => throw new AiToolException($"unknown mode '{mode}'; use add, subtract or intersect"),
+    };
 
     static FrepOp ParseOp(string op) => op.ToLowerInvariant() switch
     {

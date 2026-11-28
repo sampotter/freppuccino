@@ -1,11 +1,31 @@
-import { ChevronRight, Eye, EyeOff, Lock, Trash2, Ungroup } from 'lucide-react'
+import { Check, ChevronRight, Eye, EyeOff, Lock, Trash2, Ungroup } from 'lucide-react'
 import { useEffect, useRef, useState, type DragEvent, type MouseEvent } from 'react'
 import { cn } from '@/lib/utils'
-import { NodeIcon } from '@/components/brand-icon'
+import { BrandIcon, NodeIcon } from '@/components/brand-icon'
+import { BlendHint } from '@/components/blend-hint'
 import { Input } from '@/components/ui/input'
-import { send } from '@/bridge/host'
-import { isDeform } from '@/lib/scene'
-import type { Id, OperationKind, SceneNode, SelectMode } from '@/bridge/protocol'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { send, useHost } from '@/bridge/host'
+import { BASE_TIP, IDLE_TIPS, MODES, ROOT_TIP, rowIdle, rowMode } from '@/lib/scene'
+import type { Id, RowMode, SceneNode, SelectMode } from '@/bridge/protocol'
+
+type ModeRow = { parent: Id; child: Id }
+type ModeMenu = { x: number; y: number; rows: ModeRow[]; current: RowMode; key: string }
+
+function modeRows(scene: SceneNode[], selection: Set<Id>, clicked: ModeRow): ModeRow[] {
+  if (!selection.has(clicked.child)) return [clicked]
+  const rows = new Map<string, ModeRow>()
+  const walk = (nodes: SceneNode[]) =>
+    nodes.forEach((n) => {
+      n.children?.forEach((c, i) => {
+        if (n.op === 'group' && (i > 0 || n.modes?.[i] !== 'add') && selection.has(c.id)) rows.set(`${n.id}/${c.id}`, { parent: n.id, child: c.id })
+      })
+      if (n.children) walk(n.children)
+    })
+  walk(scene)
+  rows.set(`${clicked.parent}/${clicked.child}`, clicked)
+  return [...rows.values()]
+}
 
 /**
  * Browser tree (Fusion 360 browser / CATIA spec tree). Primitives are leaves; operation nodes
@@ -37,16 +57,24 @@ export function SceneTree(props: {
   const dnd: Dnd = { drag, drop, setDrag, setDrop, endDrag }
 
   const [menu, setMenu] = useState<{ x: number; y: number; id: Id; operation: boolean } | null>(null)
+  const [modeMenu, setModeMenu] = useState<ModeMenu | null>(null)
   useEffect(() => {
-    if (!menu) return
-    const close = () => setMenu(null)
+    if (!menu && !modeMenu) return
+    const close = () => {
+      setMenu(null)
+      setModeMenu(null)
+    }
     window.addEventListener('pointerdown', close)
     window.addEventListener('keydown', close)
     return () => {
       window.removeEventListener('pointerdown', close)
       window.removeEventListener('keydown', close)
     }
-  }, [menu])
+  }, [menu, modeMenu])
+  const openModeMenu = (at: DOMRect, row: ModeRow, current: RowMode, key: string) => {
+    setMenu(null)
+    setModeMenu(modeMenu?.key === key ? null : { x: at.left, y: at.bottom + 4, rows: modeRows(props.nodes, props.selection, row), current, key })
+  }
 
   if (props.nodes.length === 0)
     return <p className="type-small px-4 py-6 text-center text-muted-foreground">No F-rep objects yet. Create one from the Freppuccino toolbar.</p>
@@ -67,9 +95,37 @@ export function SceneTree(props: {
             collapsed={collapsed}
             onToggle={toggle}
             onDeleteMenu={setMenu}
+            modeMenuKey={modeMenu?.key ?? null}
+            onModeMenu={openModeMenu}
           />
         ))}
       </ul>
+      {modeMenu && (
+        <div
+          role="menu"
+          className="fixed z-50 w-40 rounded-md border border-input bg-popover p-1 text-popover-foreground shadow-float"
+          style={{ left: modeMenu.x, top: modeMenu.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {(Object.keys(MODES) as RowMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="menuitemradio"
+              aria-checked={mode === modeMenu.current}
+              className={cn('type-small flex h-7 w-full items-center gap-2 rounded-sm px-2 text-left hover:bg-accent', mode === modeMenu.current && 'bg-accent/60')}
+              onClick={() => {
+                send({ type: 'setModes', rows: modeMenu.rows.map((r) => ({ ...r, mode })) })
+                setModeMenu(null)
+              }}
+            >
+              <BrandIcon name={MODES[mode].icon} className="size-[17px]" />
+              <span className="flex-1">{MODES[mode].label}</span>
+              {mode === modeMenu.current && <Check className="size-3.5" />}
+            </button>
+          ))}
+        </div>
+      )}
       {drag?.from && !drag.stuck && !drag.placement && (
         <div
           onDragOver={(e) => {
@@ -138,7 +194,7 @@ type Dnd = {
   endDrag: () => void
 }
 
-const isCombine = (n: SceneNode | null) => !n || n.op === 'union' || n.op === 'subtract' || n.op === 'intersect'
+const isCombine = (n: SceneNode | null) => !n || n.op === 'group'
 const placedLike = (drag: Drag, target: SceneNode | null) => (target?.placement ?? undefined) === drag.placement
 
 function subtreeIds(node: SceneNode, into = new Set<Id>()): Set<Id> {
@@ -161,8 +217,8 @@ function TreeRow(props: {
   onSelect: (ids: Id[], mode: SelectMode) => void
   onSetVisible: (id: Id, visible: boolean) => void
   onDeleteMenu: (menu: { x: number; y: number; id: Id; operation: boolean }) => void
-  /** subtract operands after the first are tools */
-  role?: 'tool'
+  modeMenuKey: string | null
+  onModeMenu: (at: DOMRect, row: ModeRow, current: RowMode, key: string) => void
 }) {
   const { node, depth, selection, collapsed, parent, index, dnd } = props
   const hasChildren = !!node.children?.length
@@ -263,7 +319,7 @@ function TreeRow(props: {
         className={cn(
           'group relative mx-2 flex h-7 cursor-default items-center gap-1.5 rounded-sm pr-1 select-none hover:bg-accent/50',
           selected && 'bg-accent font-bold hover:bg-accent',
-          !node.visible && 'text-muted-foreground [&_[data-slot=brand-icon]]:opacity-40',
+          (!node.visible || (parent?.op === 'group' && rowIdle(parent, index))) && 'text-muted-foreground [&_[data-slot=brand-icon]]:opacity-40',
           node.missing && 'italic line-through',
           dnd.drag?.id === node.id && 'opacity-50',
           dropZone === 'into' && 'bg-accent/50 ring-2 ring-primary ring-inset',
@@ -286,13 +342,13 @@ function TreeRow(props: {
         >
           <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
         </button>
+        <ModeCell {...props} />
         <NodeIcon node={node} className="size-5" />
         <span className={cn('min-w-0 flex-1 truncate', node.kind === 'operation' && 'font-extrabold')}>
-          {props.role === 'tool' && <span className="text-muted-foreground">− </span>}
           {props.labels.get(node.id)}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
-          {node.kind === 'operation' && node.op && !isDeform(node.op) && node.op !== 'offset' && !node.missing && (
+          {(node.op === 'group' || node.op === 'blend') && !node.missing && (
             <BlendField id={node.id} op={node.op} k={node.k ?? 0} />
           )}
           {node.locked && <Lock className="size-3.5 text-muted-foreground" />}
@@ -320,7 +376,6 @@ function TreeRow(props: {
               path={`${props.path}/${i}:${child.id}`}
               parent={node}
               index={i}
-              role={node.op === 'subtract' && i > 0 ? 'tool' : undefined}
             />
           ))}
         </ul>
@@ -329,9 +384,69 @@ function TreeRow(props: {
   )
 }
 
+function ModeCell(props: {
+  node: SceneNode
+  parent: SceneNode | null
+  index: number
+  path: string
+  modeMenuKey: string | null
+  onModeMenu: (at: DOMRect, row: ModeRow, current: RowMode, key: string) => void
+}) {
+  const { node, parent, index } = props
+  if (!parent)
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span aria-label="Top level" className="grid size-[22px] shrink-0 place-items-center">
+            <span className="size-1.5 rounded-full border-[1.5px] border-muted-foreground opacity-60" />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-56">{ROOT_TIP}</TooltipContent>
+      </Tooltip>
+    )
+  if (parent.op !== 'group') return <span aria-hidden className="w-[22px] shrink-0" />
+  const mode = rowMode(parent, index)
+  if (index === 0 && mode === 'add')
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span aria-label="Base" className="grid size-[22px] shrink-0 place-items-center">
+            <span className="size-1.5 rounded-full bg-muted-foreground opacity-60" />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-56">{BASE_TIP}</TooltipContent>
+      </Tooltip>
+    )
+  const idle = rowIdle(parent, index)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={MODES[mode].label}
+          aria-haspopup="menu"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            props.onModeMenu(e.currentTarget.getBoundingClientRect(), { parent: parent.id, child: node.id }, mode, props.path)
+          }}
+          className={cn(
+            'grid size-[22px] shrink-0 place-items-center rounded-sm border border-input bg-card outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring',
+            props.modeMenuKey === props.path && 'border-ink',
+          )}
+        >
+          <BrandIcon name={MODES[mode].icon} className="size-[17px]" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{(idle && IDLE_TIPS[mode]) || MODES[mode].tip}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 /** Typed blend for an operation node. Commits on Enter or blur, same path as the inspector slider. */
-function BlendField(props: { id: Id; op: OperationKind | 'blend'; k: number }) {
+function BlendField(props: { id: Id; op: 'group' | 'blend'; k: number }) {
   const { id, op, k } = props
+  const units = useHost((s) => s.settings.units)
   const [text, setText] = useState(() => formatBlend(k))
   const [shown, setShown] = useState(k)
   if (k !== shown) {
@@ -351,19 +466,21 @@ function BlendField(props: { id: Id; op: OperationKind | 'blend'; k: number }) {
   }
 
   return (
-    <Input
-      inputMode="decimal"
-      aria-label="Blend"
-      value={text}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onMouseDown={(e) => e.stopPropagation()}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') e.currentTarget.blur()
-      }}
-      className="type-numeric h-5 w-14 px-1 text-right font-medium"
-    />
+    <BlendHint op={op} units={units}>
+      <Input
+        inputMode="decimal"
+        aria-label="Blend radius"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+        }}
+        className="type-numeric h-5 w-14 px-1 text-right font-medium"
+      />
+    </BlendHint>
   )
 }
 

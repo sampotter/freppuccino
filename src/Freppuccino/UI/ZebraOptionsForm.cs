@@ -137,7 +137,7 @@ public sealed class ZebraOptionsForm : Form
 
     void UpdateStatus()
     {
-        int unions = FrepTrees.Get(doc).Nodes.Count(n => n.Op == FrepOp.Union && !n.Hidden);
+        int unions = FrepTrees.Get(doc).Nodes.Count(n => n.IsGroup && !n.Hidden && Enumerable.Range(0, n.Operands.Length).Count(i => n.ModeAt(i) == FrepMode.Add) > 1);
         var view = doc.Views.ActiveView;
         bool inMode = view?.ActiveViewport.DisplayMode?.Id == FreppuccinoDisplayMode.Id;
         status.Text = (unions == 0 ? "No unions yet: create one with FUnion." : $"Showing zebra on {unions} union(s).")

@@ -22,8 +22,8 @@ public static partial class AiTools
         switch (opName)
         {
             case "offset":
-                if (child is not { Op: FrepOp.Union or FrepOp.Intersect or FrepOp.Difference })
-                    throw new AiToolException("offset wraps a union / subtract / intersect node (N#). To grow or shrink a single primitive, " +
+                if (child is not { IsGroup: true })
+                    throw new AiToolException("offset wraps a group node (N#). To grow or shrink a single primitive, " +
                                               "change its size with update_primitive, or combine it first");
                 op = FrepOp.Offset;
                 break;

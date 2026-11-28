@@ -30,6 +30,7 @@ public static class SceneNodeKind
 /// <summary>Combine operations. Each takes a blend k (model units, 0 = sharp).</summary>
 public static class OperationKind
 {
+    public const string Group = "group";
     public const string Union = "union";
     /// children[0] minus children[1..]
     public const string Subtract = "subtract";
@@ -68,7 +69,15 @@ public sealed record SceneNode(
     bool? Custom = null,
     /// <summary>sdUser (FFunction) only: code, compile result, params. Params then holds just b.x/b.y/b.z.</summary>
     UserFnInfo? UserFn = null,
-    string? Placement = null);
+    string? Placement = null,
+    IReadOnlyList<string>? Modes = null);
+
+public static class RowMode
+{
+    public const string Add = "add";
+    public const string Subtract = "subtract";
+    public const string Intersect = "intersect";
+}
 
 /// <summary>FFunction inspector data (SDF.Code / SDF.L / SDF.u.*), compiled with UserFnCompiler.</summary>
 /// <param name="Hash">Program hash when <paramref name="Ok"/>.</param>
@@ -89,7 +98,9 @@ public sealed record UserFnDiagnosticInfo(int Line, int Column, string Message);
 
 public sealed record UserFnParamInfo(string Name, double Value, double Default);
 
-public sealed record UiSettings(string Units);
+public sealed record UiSettings(string Units, DisplayInfo Display);
+
+public sealed record DisplayInfo(string Cutters, string OtherShapes, string Geometry, string HiddenLines);
 
 // ───────────────────────────── Host → UI ─────────────────────────────
 
@@ -99,9 +110,19 @@ public abstract record HostMessage
 }
 
 /// Full snapshot; sent in reply to "ready" and when the active document changes.
-public sealed record StateMessage(IReadOnlyList<SceneNode> Scene, IReadOnlyList<string> Selection, UiSettings Settings, string Theme, bool FrepMode) : HostMessage
+public sealed record StateMessage(IReadOnlyList<SceneNode> Scene, IReadOnlyList<string> Selection, UiSettings Settings, string Theme, bool FrepMode, string Doc) : HostMessage
 {
     public override string Type => "state";
+}
+
+public sealed record SettingsMessage(UiSettings Settings) : HostMessage
+{
+    public override string Type => "settings";
+}
+
+public sealed record ShowTabMessage(string Tab) : HostMessage
+{
+    public override string Type => "showTab";
 }
 
 public sealed record ViewMessage(bool FrepMode) : HostMessage
@@ -157,7 +178,7 @@ public sealed record SetParamRequest(string Id, string Name, double Value, bool 
 /// Set a primitive's SDF.Color ("#RRGGBB"). Preview = live picker tick (no undo); the next non-preview one ends the gesture as one undo step.
 public sealed record SetColorRequest(string Id, string Color, bool Preview = false);
 
-/// New CSG node over top-level operands. Union and intersect take any number ≥ 2; subtract takes exactly two (operands[0] is the target).
+/// New group over ≥ 2 top-level operands with a preset: union = all add, subtract = operands[0] minus the rest, intersect = all intersect.
 public sealed record ApplyOperationRequest(string[] Operands, string Op, double K);
 
 /// Insert a blend node (k = 0) directly above a Repeat. Its slider fillets the copies.
@@ -177,6 +198,12 @@ public sealed record SetNodeParamRequest(string Id, string Name, double Value, b
 public sealed record DeleteNodesRequest(string[] Ids, bool Deep = false);
 
 public sealed record MoveNodeRequest(string Id, string? From = null, string? To = null, int? Index = null);
+
+public sealed record SetModesRequest(ModeRow[] Rows);
+
+public sealed record ModeRow(string Parent, string Child, string Mode);
+
+public sealed record SetDisplayRequest(string? Cutters = null, string? OtherShapes = null, string? Geometry = null, string? HiddenLines = null);
 
 /// AI agent tool call (Ai/AiTools.cs); answered with an AiToolResultMessage carrying the same CallId.
 public sealed record AiToolRequest(string CallId, string Tool, JsonElement? Args = null, string? Source = null);

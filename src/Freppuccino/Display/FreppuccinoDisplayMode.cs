@@ -78,7 +78,7 @@ public static class FreppuccinoDisplayMode
     {
         if (Id == Guid.Empty || DisplayModeDescription.GetDisplayMode(SourceId(g)) is not { } src) return false;
         var views = RhinoDoc.OpenDocuments().SelectMany(d => d.Views.GetViewList(ViewTypeFilter.All))
-            .Where(v => v.ActiveViewport.DisplayMode?.Id == Id).ToList();
+            .Where(v => v.ActiveViewport.DisplayMode?.Id == Id || restoring.Contains(v.ActiveViewport.Id)).ToList();
         var path = Path.Combine(Path.GetTempPath(), $"freppuccino-mode-{Guid.NewGuid():N}.ini");
         Guid imported = Guid.Empty;
         try
@@ -112,11 +112,34 @@ public static class FreppuccinoDisplayMode
         var capture = DisplayModeDescription.GetDisplayMode(CaptureId);
         foreach (var v in views)
         {
-            if (capture != null) v.ActiveViewport.DisplayMode = capture;
-            v.ActiveViewport.DisplayMode = m;
+            v.ActiveViewport.DisplayMode = capture ?? m;
             v.Redraw();
+            if (capture != null) restoring.Add(v.ActiveViewport.Id);
+        }
+        if (capture != null && restoring.Count > 0 && !restoreQueued)
+        {
+            restoreQueued = true;
+            RhinoApp.Idle += Restore;
         }
         return true;
+    }
+
+    static readonly HashSet<Guid> restoring = [];
+    static bool restoreQueued;
+
+    static void Restore(object? sender, EventArgs e)
+    {
+        RhinoApp.Idle -= Restore;
+        restoreQueued = false;
+        var m = DisplayModeDescription.GetDisplayMode(Id);
+        foreach (var v in RhinoDoc.OpenDocuments().SelectMany(d => d.Views.GetViewList(ViewTypeFilter.All)))
+        {
+            var vp = v.ActiveViewport;
+            if (m == null || !restoring.Contains(vp.Id) || vp.DisplayMode?.Id != CaptureId) continue;
+            vp.DisplayMode = m;
+            v.Redraw();
+        }
+        restoring.Clear();
     }
 
     static bool IsCurrentCapture(DisplayModeDescription m) =>
